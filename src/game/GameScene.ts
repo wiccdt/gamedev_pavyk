@@ -6,6 +6,11 @@ const FLY_RADIUS = 10;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
 const WATER_RISE_SPEED = 42;
+const SPIKES_START_AFTER_SECONDS = 60;
+const SPIKE_SPAWN_INTERVAL = 620;
+const SPIKE_HIT_RADIUS = 20;
+const SPIKE_WARNING_HOLD_SECONDS = 2.5;
+const SPIKE_WARNING_FADE_SECONDS = 1.5;
 const MAX_ATTACH_DISTANCE = 460;
 const REEL_SPEED = 150;
 const MIN_ROPE_LENGTH = 72;
@@ -28,22 +33,37 @@ type Platform = {
   graphic: Phaser.GameObjects.Rectangle;
 };
 
+type Spike = {
+  x: number;
+  y: number;
+  graphic: Phaser.GameObjects.Triangle;
+};
+
+type Fly = {
+  x: number;
+  y: number;
+  graphic: Phaser.GameObjects.Arc;
+};
+
 export class GameScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Arc;
-  private fly!: Phaser.GameObjects.Arc;
   private rope!: Phaser.GameObjects.Graphics;
   private water!: Phaser.GameObjects.Rectangle;
   private scoreText!: Phaser.GameObjects.Text;
+  private timerText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
   private pauseOverlay!: Phaser.GameObjects.Container;
   private gameOverOverlay!: Phaser.GameObjects.Container;
   private gameOverText!: Phaser.GameObjects.Text;
+  private phaseWarning!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'left' | 'right', Phaser.Input.Keyboard.Key>;
   private pauseKey!: Phaser.Input.Keyboard.Key;
   private escapeKey!: Phaser.Input.Keyboard.Key;
   private anchorPoints: AnchorPoint[] = [];
   private platforms: Platform[] = [];
+  private flies: Fly[] = [];
+  private spikes: Spike[] = [];
   private wallSegments: Phaser.GameObjects.Rectangle[] = [];
   private anchor: AnchorPoint | null = null;
   private ropeLength = 0;
@@ -54,7 +74,11 @@ export class GameScene extends Phaser.Scene {
   private waterY = 0;
   private worldHeight = 0;
   private generatedTop = 0;
+  private elapsedGameTime = 0;
+  private warningRemaining = 0;
+  private nextSpikeY: number | null = null;
   private score = 0;
+  private spikesActive = false;
   private gameOver = false;
   private paused = false;
 
@@ -75,7 +99,13 @@ export class GameScene extends Phaser.Scene {
     this.isGrounded = false;
     this.anchorPoints = [];
     this.platforms = [];
+    this.flies = [];
+    this.spikes = [];
     this.wallSegments = [];
+    this.elapsedGameTime = 0;
+    this.warningRemaining = 0;
+    this.nextSpikeY = null;
+    this.spikesActive = false;
     this.waterY = worldHeight;
     this.gameOver = false;
     this.paused = false;
@@ -115,16 +145,32 @@ export class GameScene extends Phaser.Scene {
       fontSize: '21px',
       color: '#ffffff',
     }).setScrollFactor(0);
+    this.timerText = this.add.text(width - 24, 24, 'Время: 00:00', {
+      fontFamily: 'system-ui, sans-serif',
+      fontSize: '21px',
+      color: '#ffffff',
+    }).setOrigin(1, 0).setScrollFactor(0);
+    this.phaseWarning = this.add
+      .text(width / 2, height * 0.2, 'ОСТОРОЖНО: ПОЯВИЛИСЬ ШИПЫ!', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '26px',
+        color: '#ffffff',
+        backgroundColor: '#991b1b',
+        padding: { x: 18, y: 12 },
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setAlpha(0);
 
     this.createPlatforms(width, height, startingY);
     this.createAnchorPoints(width, height, startingY);
+    this.createStartingFlies(width, height, startingY);
     this.generatedTop = Math.min(...this.anchorPoints.map((point) => point.y));
 
     this.water = this.add.rectangle(width / 2, worldHeight, width, 0, 0x0ea5e9, 0.8);
     this.rope = this.add.graphics();
     this.player = this.add.circle(width * 0.3, startingY, PLAYER_RADIUS, 0xf8fafc);
-    this.fly = this.add.circle(0, 0, FLY_RADIUS, 0xfacc15);
-    this.placeFlyNearPlayer();
 
     const startingAnchor = this.anchorPoints[0];
     if (!startingAnchor) {
@@ -159,16 +205,20 @@ export class GameScene extends Phaser.Scene {
     if (this.gameOver || this.paused) return;
 
     const seconds = Math.min(delta / 1000, 0.05);
+    this.elapsedGameTime += seconds;
+    this.updateTimer();
+    this.updatePhaseWarning(seconds);
     this.waterY -= WATER_RISE_SPEED * seconds;
     this.ensureWorldAhead();
+    this.ensureSpikesAhead();
     this.updateWater();
     this.updateSpider(seconds);
     this.updateCamera(seconds);
-    this.ensureFlyAhead();
     this.checkFly();
+    this.checkSpikeCollision();
     this.removeSubmergedObjects();
 
-    if (this.player.y + PLAYER_RADIUS >= this.waterY) {
+    if (!this.gameOver && this.player.y + PLAYER_RADIUS >= this.waterY) {
       this.endGame();
     }
 
@@ -203,21 +253,32 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private placeFlyNearPlayer(): void {
-    this.fly.setPosition(
-      Phaser.Math.Between(WALL_WIDTH + 50, this.scale.width - WALL_WIDTH - 50),
-      Phaser.Math.Between(
-        this.player.y - this.scale.height * 0.55,
-        this.player.y + this.scale.height * 0.25,
-      ),
-    );
+  private createStartingFlies(width: number, height: number, startingY: number): void {
+    const layout = [
+      { x: 0.72, rise: 0.15 },
+      { x: 0.28, rise: 0.65 },
+      { x: 0.72, rise: 1.15 },
+      { x: 0.28, rise: 1.65 },
+      { x: 0.72, rise: 2.15 },
+      { x: 0.28, rise: 2.65 },
+      { x: 0.72, rise: 3.15 },
+    ];
+
+    for (const position of layout) {
+      this.addFly(width * position.x, startingY - height * position.rise);
+    }
   }
 
-  private ensureFlyAhead(): void {
-    const relativeY = this.fly.y - this.player.y;
-    if (relativeY > this.scale.height * 0.35 || relativeY < -this.scale.height * 0.75) {
-      this.placeFlyNearPlayer();
-    }
+  private addFly(x: number, y: number): void {
+    const graphic = this.add.circle(x, y, FLY_RADIUS, 0xfacc15);
+    this.flies.push({ x, y, graphic });
+  }
+
+  private updateTimer(): void {
+    const totalSeconds = Math.floor(this.elapsedGameTime);
+    const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+    this.timerText.setText(`Время: ${minutes}:${seconds}`);
   }
 
   private createPlatforms(width: number, height: number, startingY: number): void {
@@ -337,14 +398,17 @@ export class GameScene extends Phaser.Scene {
       ),
     );
 
-    const xPositions = [0.2, 0.74, 0.38, 0.82, 0.55];
-    const rises = [0.18, 0.42, 0.66, 0.9];
+    const xPositions = [0.38, 0.62, 0.84, 0.62, 0.38];
+    const rises = [0.12, 0.3, 0.48, 0.66, 0.84];
     for (let index = 0; index < rises.length; index += 1) {
-      const x = width * xPositions[(this.anchorPoints.length + index) % xPositions.length]!;
+      const x = width * xPositions[index]!;
       const y = previousTop - chunkHeight * rises[index]!;
       const marker = this.add.circle(x, y, 9, 0x38bdf8).setStrokeStyle(3, 0xe0f2fe);
       this.anchorPoints.push({ x, y, marker });
     }
+
+    this.addFly(width * 0.28, previousTop - chunkHeight * 0.36);
+    this.addFly(width * 0.72, previousTop - chunkHeight * 0.82);
 
     const platformX = width * (this.platforms.length % 2 === 0 ? 0.32 : 0.7);
     const platformY = previousTop - chunkHeight * 0.72;
@@ -378,6 +442,76 @@ export class GameScene extends Phaser.Scene {
       wall.destroy();
       return false;
     });
+
+    this.spikes = this.spikes.filter((spike) => {
+      if (spike.y < this.waterY) return true;
+      spike.graphic.destroy();
+      return false;
+    });
+
+    this.flies = this.flies.filter((fly) => {
+      if (fly.y < this.waterY) return true;
+      fly.graphic.destroy();
+      return false;
+    });
+  }
+
+  private ensureSpikesAhead(): void {
+    if (this.elapsedGameTime < SPIKES_START_AFTER_SECONDS) return;
+
+    if (!this.spikesActive) {
+      this.spikesActive = true;
+      this.nextSpikeY = this.player.y - this.scale.height * 0.45;
+      this.phaseWarning.setAlpha(1);
+      this.warningRemaining = SPIKE_WARNING_HOLD_SECONDS + SPIKE_WARNING_FADE_SECONDS;
+    }
+
+    const spawnLimit = this.player.y - this.scale.height * 1.4;
+    while (this.nextSpikeY !== null && this.nextSpikeY > spawnLimit) {
+      this.spawnSpikeCluster(this.nextSpikeY);
+      this.nextSpikeY -= SPIKE_SPAWN_INTERVAL;
+    }
+  }
+
+  private updatePhaseWarning(seconds: number): void {
+    if (this.warningRemaining <= 0) return;
+    this.warningRemaining = Math.max(0, this.warningRemaining - seconds);
+    const alpha = Math.min(1, this.warningRemaining / SPIKE_WARNING_FADE_SECONDS);
+    this.phaseWarning.setAlpha(alpha);
+  }
+
+  private spawnSpikeCluster(y: number): void {
+    const { width } = this.scale;
+    const clusterX = Phaser.Math.Between(width * 0.18, width * 0.82);
+
+    for (const offsetX of [-24, 0, 24]) {
+      const x = Phaser.Math.Clamp(
+        clusterX + offsetX,
+        WALL_WIDTH + SPIKE_HIT_RADIUS,
+        width - WALL_WIDTH - SPIKE_HIT_RADIUS,
+      );
+      const graphic = this.add.triangle(
+        x,
+        y,
+        0,
+        30,
+        18,
+        0,
+        36,
+        30,
+        0xef4444,
+      ).setStrokeStyle(2, 0xfca5a5);
+      this.spikes.push({ x, y: y + 10, graphic });
+    }
+  }
+
+  private checkSpikeCollision(): void {
+    const hit = this.spikes.some(
+      (spike) =>
+        Phaser.Math.Distance.Between(this.player.x, this.player.y, spike.x, spike.y) <=
+        SPIKE_HIT_RADIUS,
+    );
+    if (hit) this.endGame('Паук напоролся на шипы!');
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
@@ -554,27 +688,30 @@ export class GameScene extends Phaser.Scene {
   }
 
   private checkFly(): void {
-    const distance = Phaser.Math.Distance.Between(
-      this.player.x,
-      this.player.y,
-      this.fly.x,
-      this.fly.y,
-    );
-    if (distance > PLAYER_RADIUS + FLY_RADIUS) return;
+    this.flies = this.flies.filter((fly) => {
+      const distance = Phaser.Math.Distance.Between(
+        this.player.x,
+        this.player.y,
+        fly.x,
+        fly.y,
+      );
+      if (distance > PLAYER_RADIUS + FLY_RADIUS) return true;
 
-    this.score += 1;
-    this.scoreText.setText(`Мухи: ${this.score}`);
-    this.placeFlyNearPlayer();
+      fly.graphic.destroy();
+      this.score += 1;
+      this.scoreText.setText(`Мухи: ${this.score}`);
+      return false;
+    });
   }
 
-  private endGame(): void {
+  private endGame(message = 'Вода поймала паука!'): void {
     this.gameOver = true;
     this.paused = false;
     this.isReeling = false;
     if (this.anchor) this.anchor.marker.setFillStyle(0x38bdf8);
     this.anchor = null;
     this.pauseOverlay.setVisible(false);
-    this.gameOverText.setText(`Вода поймала паука!\nСъедено мух: ${this.score}`);
+    this.gameOverText.setText(`${message}\nСъедено мух: ${this.score}`);
     this.gameOverOverlay.setVisible(true);
   }
 
