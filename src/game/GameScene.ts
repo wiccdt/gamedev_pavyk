@@ -5,8 +5,7 @@ const PLAYER_RADIUS = 14;
 const FLY_RADIUS = 10;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
-const WATER_RISE_SPEED = 18;
-const TOP_LIMIT = 92;
+const WATER_RISE_SPEED = 42;
 const MAX_ATTACH_DISTANCE = 460;
 const REEL_SPEED = 150;
 const MIN_ROPE_LENGTH = 72;
@@ -14,6 +13,7 @@ const ANCHOR_SELECT_RADIUS = 42;
 const PLATFORM_JUMP_SPEED = 390;
 const PLATFORM_MOVE_SPEED = 220;
 const WORLD_HEIGHT_MULTIPLIER = 4;
+const WORLD_CHUNK_HEIGHT = 1.2;
 
 type AnchorPoint = {
   x: number;
@@ -25,6 +25,7 @@ type Platform = {
   left: number;
   right: number;
   top: number;
+  graphic: Phaser.GameObjects.Rectangle;
 };
 
 export class GameScene extends Phaser.Scene {
@@ -34,10 +35,16 @@ export class GameScene extends Phaser.Scene {
   private water!: Phaser.GameObjects.Rectangle;
   private scoreText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
+  private pauseOverlay!: Phaser.GameObjects.Container;
+  private gameOverOverlay!: Phaser.GameObjects.Container;
+  private gameOverText!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'left' | 'right', Phaser.Input.Keyboard.Key>;
+  private pauseKey!: Phaser.Input.Keyboard.Key;
+  private escapeKey!: Phaser.Input.Keyboard.Key;
   private anchorPoints: AnchorPoint[] = [];
   private platforms: Platform[] = [];
+  private wallSegments: Phaser.GameObjects.Rectangle[] = [];
   private anchor: AnchorPoint | null = null;
   private ropeLength = 0;
   private isReeling = false;
@@ -46,8 +53,10 @@ export class GameScene extends Phaser.Scene {
   private velocityY = 0;
   private waterY = 0;
   private worldHeight = 0;
+  private generatedTop = 0;
   private score = 0;
   private gameOver = false;
+  private paused = false;
 
   constructor() {
     super('GameScene');
@@ -66,16 +75,20 @@ export class GameScene extends Phaser.Scene {
     this.isGrounded = false;
     this.anchorPoints = [];
     this.platforms = [];
+    this.wallSegments = [];
     this.waterY = worldHeight;
     this.gameOver = false;
+    this.paused = false;
 
-    this.add.rectangle(WALL_WIDTH / 2, worldHeight / 2, WALL_WIDTH, worldHeight, 0x475569);
-    this.add.rectangle(
-      width - WALL_WIDTH / 2,
-      worldHeight / 2,
-      WALL_WIDTH,
-      worldHeight,
-      0x475569,
+    this.wallSegments.push(
+      this.add.rectangle(WALL_WIDTH / 2, worldHeight / 2, WALL_WIDTH, worldHeight, 0x475569),
+      this.add.rectangle(
+        width - WALL_WIDTH / 2,
+        worldHeight / 2,
+        WALL_WIDTH,
+        worldHeight,
+        0x475569,
+      ),
     );
 
     this.add
@@ -89,7 +102,7 @@ export class GameScene extends Phaser.Scene {
       .setScrollFactor(0);
 
     this.statusText = this.add
-      .text(width / 2, 54, 'Зажми точку — подтянись. Клик в пустом месте — отпусти. На платформе: ←/→ или A/D, ПРОБЕЛ.', {
+      .text(width / 2, 54, 'Зажми точку — тянись; клик мимо — отпусти. A/D — ходьба, ПРОБЕЛ — прыжок, Esc/P — пауза.', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '16px',
         color: '#cbd5e1',
@@ -105,11 +118,13 @@ export class GameScene extends Phaser.Scene {
 
     this.createPlatforms(width, height, startingY);
     this.createAnchorPoints(width, height, startingY);
+    this.generatedTop = Math.min(...this.anchorPoints.map((point) => point.y));
 
     this.water = this.add.rectangle(width / 2, worldHeight, width, 0, 0x0ea5e9, 0.8);
     this.rope = this.add.graphics();
     this.player = this.add.circle(width * 0.3, startingY, PLAYER_RADIUS, 0xf8fafc);
-    this.fly = this.add.circle(width * 0.72, startingY - height * 0.25, FLY_RADIUS, 0xfacc15);
+    this.fly = this.add.circle(0, 0, FLY_RADIUS, 0xfacc15);
+    this.placeFlyNearPlayer();
 
     const startingAnchor = this.anchorPoints[0];
     if (!startingAnchor) {
@@ -119,14 +134,16 @@ export class GameScene extends Phaser.Scene {
 
     this.input.on('pointerdown', this.handlePointerDown, this);
     this.input.on('pointerup', this.stopReeling, this);
-    this.cameras.main.setBounds(0, 0, width, worldHeight);
     this.cameras.main.scrollY = startingY - height * 0.68;
+    this.createOverlays(width, height);
 
     if (!this.input.keyboard) {
       throw new Error('Keyboard input is unavailable.');
     }
     this.input.keyboard.on('keydown-R', this.restart, this);
     this.input.keyboard.on('keydown-SPACE', this.jumpFromPlatform, this);
+    this.pauseKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
+    this.escapeKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys({
       left: Phaser.Input.Keyboard.KeyCodes.A,
@@ -135,14 +152,21 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
-    if (this.gameOver) return;
+    if (Phaser.Input.Keyboard.JustDown(this.pauseKey) ||
+      Phaser.Input.Keyboard.JustDown(this.escapeKey)) {
+      this.togglePause();
+    }
+    if (this.gameOver || this.paused) return;
 
     const seconds = Math.min(delta / 1000, 0.05);
-    this.waterY = Math.max(TOP_LIMIT, this.waterY - WATER_RISE_SPEED * seconds);
+    this.waterY -= WATER_RISE_SPEED * seconds;
+    this.ensureWorldAhead();
     this.updateWater();
     this.updateSpider(seconds);
     this.updateCamera(seconds);
+    this.ensureFlyAhead();
     this.checkFly();
+    this.removeSubmergedObjects();
 
     if (this.player.y + PLAYER_RADIUS >= this.waterY) {
       this.endGame();
@@ -179,6 +203,23 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private placeFlyNearPlayer(): void {
+    this.fly.setPosition(
+      Phaser.Math.Between(WALL_WIDTH + 50, this.scale.width - WALL_WIDTH - 50),
+      Phaser.Math.Between(
+        this.player.y - this.scale.height * 0.55,
+        this.player.y + this.scale.height * 0.25,
+      ),
+    );
+  }
+
+  private ensureFlyAhead(): void {
+    const relativeY = this.fly.y - this.player.y;
+    if (relativeY > this.scale.height * 0.35 || relativeY < -this.scale.height * 0.75) {
+      this.placeFlyNearPlayer();
+    }
+  }
+
   private createPlatforms(width: number, height: number, startingY: number): void {
     const platformSpecs = [
       { x: width * 0.32, y: startingY - height * 0.75, width: 190 },
@@ -187,20 +228,168 @@ export class GameScene extends Phaser.Scene {
     ];
 
     this.platforms = platformSpecs.map((platform) => {
-      this.add.rectangle(platform.x, platform.y, platform.width, 18, 0x94a3b8);
+      const graphic = this.add.rectangle(
+        platform.x,
+        platform.y,
+        platform.width,
+        18,
+        0x94a3b8,
+      );
       return {
         left: platform.x - platform.width / 2,
         right: platform.x + platform.width / 2,
         top: platform.y - 9,
+        graphic,
       };
+    });
+  }
+
+  private createOverlays(width: number, height: number): void {
+    const pauseBackground = this.add.rectangle(
+      width / 2,
+      height / 2,
+      width,
+      height,
+      0x020617,
+      0.78,
+    );
+    const pauseText = this.add
+      .text(width / 2, height / 2, 'ПАУЗА\nНажми Esc или P, чтобы продолжить', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '30px',
+        color: '#ffffff',
+        align: 'center',
+        lineSpacing: 12,
+      })
+      .setOrigin(0.5);
+    this.pauseOverlay = this.add
+      .container(0, 0, [pauseBackground, pauseText])
+      .setScrollFactor(0)
+      .setDepth(100)
+      .setVisible(false);
+
+    const gameOverBackground = this.add.rectangle(
+      width / 2,
+      height / 2,
+      width,
+      height,
+      0x020617,
+      0.82,
+    );
+    this.gameOverText = this.add
+      .text(width / 2, height / 2 - 70, '', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '28px',
+        color: '#ffffff',
+        align: 'center',
+      })
+      .setOrigin(0.5);
+    const restartButton = this.add
+      .rectangle(width / 2, height / 2 + 45, 250, 58, 0x0284c7);
+    const restartLabel = this.add
+      .text(width / 2, height / 2 + 45, 'Начать сначала', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '22px',
+        color: '#ffffff',
+      })
+      .setOrigin(0.5);
+    this.gameOverOverlay = this.add
+      .container(0, 0, [gameOverBackground, this.gameOverText, restartButton, restartLabel])
+      .setScrollFactor(0)
+      .setDepth(101)
+      .setVisible(false);
+  }
+
+  private togglePause(): void {
+    if (this.gameOver) return;
+    this.paused = !this.paused;
+    this.pauseOverlay.setVisible(this.paused);
+    if (this.paused) this.isReeling = false;
+  }
+
+  private ensureWorldAhead(): void {
+    const generationThreshold = this.cameras.main.scrollY - this.scale.height;
+    while (this.generatedTop > generationThreshold) {
+      this.generateUpperChunk();
+    }
+  }
+
+  private generateUpperChunk(): void {
+    const { width, height } = this.scale;
+    const chunkHeight = height * WORLD_CHUNK_HEIGHT;
+    const previousTop = this.generatedTop;
+    const nextTop = previousTop - chunkHeight;
+
+    this.wallSegments.push(
+      this.add.rectangle(
+        WALL_WIDTH / 2,
+        (previousTop + nextTop) / 2,
+        WALL_WIDTH,
+        chunkHeight + 2,
+        0x475569,
+      ),
+      this.add.rectangle(
+        width - WALL_WIDTH / 2,
+        (previousTop + nextTop) / 2,
+        WALL_WIDTH,
+        chunkHeight + 2,
+        0x475569,
+      ),
+    );
+
+    const xPositions = [0.2, 0.74, 0.38, 0.82, 0.55];
+    const rises = [0.18, 0.42, 0.66, 0.9];
+    for (let index = 0; index < rises.length; index += 1) {
+      const x = width * xPositions[(this.anchorPoints.length + index) % xPositions.length]!;
+      const y = previousTop - chunkHeight * rises[index]!;
+      const marker = this.add.circle(x, y, 9, 0x38bdf8).setStrokeStyle(3, 0xe0f2fe);
+      this.anchorPoints.push({ x, y, marker });
+    }
+
+    const platformX = width * (this.platforms.length % 2 === 0 ? 0.32 : 0.7);
+    const platformY = previousTop - chunkHeight * 0.72;
+    const platformWidth = 190;
+    const graphic = this.add.rectangle(platformX, platformY, platformWidth, 18, 0x94a3b8);
+    this.platforms.push({
+      left: platformX - platformWidth / 2,
+      right: platformX + platformWidth / 2,
+      top: platformY - 9,
+      graphic,
+    });
+
+    this.generatedTop = nextTop;
+  }
+
+  private removeSubmergedObjects(): void {
+    this.anchorPoints = this.anchorPoints.filter((point) => {
+      if (point.y < this.waterY || point === this.anchor) return true;
+      point.marker.destroy();
+      return false;
+    });
+
+    this.platforms = this.platforms.filter((platform) => {
+      if (platform.top < this.waterY) return true;
+      platform.graphic.destroy();
+      return false;
+    });
+
+    this.wallSegments = this.wallSegments.filter((wall) => {
+      if (wall.getBounds().top < this.waterY) return true;
+      wall.destroy();
+      return false;
     });
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.gameOver) {
-      this.restart();
+      const buttonCenterY = this.scale.height / 2 + 45;
+      const clickedRestart =
+        Math.abs(pointer.x - this.scale.width / 2) <= 125 &&
+        Math.abs(pointer.y - buttonCenterY) <= 29;
+      if (clickedRestart) this.restart();
       return;
     }
+    if (this.paused) return;
 
     const nearestAnchor = this.findAnchor(pointer.worldX, pointer.worldY);
     if (nearestAnchor) {
@@ -330,19 +519,11 @@ export class GameScene extends Phaser.Scene {
       this.velocityX = -Math.abs(this.velocityX) * 0.65;
     }
 
-    if (this.player.y < TOP_LIMIT + PLAYER_RADIUS) {
-      this.player.y = TOP_LIMIT + PLAYER_RADIUS;
-      this.velocityY = Math.abs(this.velocityY) * 0.65;
-    }
   }
 
   private updateCamera(seconds: number): void {
     const camera = this.cameras.main;
-    const targetY = Phaser.Math.Clamp(
-      this.player.y - this.scale.height * 0.68,
-      0,
-      this.worldHeight - this.scale.height,
-    );
+    const targetY = this.player.y - this.scale.height * 0.68;
     camera.scrollY += (targetY - camera.scrollY) * Math.min(1, seconds * 5);
   }
 
@@ -383,31 +564,18 @@ export class GameScene extends Phaser.Scene {
 
     this.score += 1;
     this.scoreText.setText(`Мухи: ${this.score}`);
-    this.fly.setPosition(
-      Phaser.Math.Between(WALL_WIDTH + 50, this.scale.width - WALL_WIDTH - 50),
-      Phaser.Math.Between(
-        Math.max(TOP_LIMIT + 30, this.player.y - this.scale.height * 0.7),
-        Math.min(
-          this.worldHeight - this.scale.height * 0.15,
-          this.player.y + this.scale.height * 0.35,
-        ),
-      ),
-    );
+    this.placeFlyNearPlayer();
   }
 
   private endGame(): void {
     this.gameOver = true;
+    this.paused = false;
     this.isReeling = false;
     if (this.anchor) this.anchor.marker.setFillStyle(0x38bdf8);
     this.anchor = null;
-    this.statusText
-      .setText(`Вода поймала паука! Съедено мух: ${this.score}\nНажми R или кликни, чтобы начать заново.`)
-      .setColor('#ffffff')
-      .setFontSize(24)
-      .setAlign('center')
-      .setOrigin(0.5)
-      .setPosition(this.scale.width / 2, this.scale.height / 2)
-      .setScrollFactor(0);
+    this.pauseOverlay.setVisible(false);
+    this.gameOverText.setText(`Вода поймала паука!\nСъедено мух: ${this.score}`);
+    this.gameOverOverlay.setVisible(true);
   }
 
   private restart(): void {
