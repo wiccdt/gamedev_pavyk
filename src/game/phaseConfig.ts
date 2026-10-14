@@ -1,0 +1,18 @@
+export const PHASE_TWO_CONFIG = {
+  fliesToStart: 3,
+  spikeSpawnInterval: 620,
+  spikeHitRadius: 20,
+  warningHoldSeconds: 2.5,
+  warningFadeSeconds: 1.5,
+  warningText: 'ОСТОРОЖНО: ПОЯВИЛИСЬ ШИПЫ!',
+  firstSpikeLeadScreens: 0.45,
+  spikeSpawnAheadScreens: 1.4,
+  clusterMinX: 0.18,
+  clusterMaxX: 0.82,
+  spikeOffsetsX: [-24, 0, 24],
+  spikeWidth: 36,
+  spikeHeight: 30,
+  spikeColor: 0xef4444,
+  spikeStrokeColor: 0xfca5a5,
+  collisionMessage: 'Паук напоролся на шипы!',
+} as const;

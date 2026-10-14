@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { PHASE_TWO_CONFIG } from './phaseConfig';
 
 const WALL_WIDTH = 24;
 const PLAYER_RADIUS = 14;
@@ -6,11 +7,6 @@ const FLY_RADIUS = 10;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
 const WATER_RISE_SPEED = 42;
-const SPIKES_START_AFTER_FLIES = 3;
-const SPIKE_SPAWN_INTERVAL = 620;
-const SPIKE_HIT_RADIUS = 20;
-const SPIKE_WARNING_HOLD_SECONDS = 2.5;
-const SPIKE_WARNING_FADE_SECONDS = 1.5;
 const MAX_ATTACH_DISTANCE = 460;
 const REEL_SPEED = 150;
 const MIN_ROPE_LENGTH = 72;
@@ -151,7 +147,7 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(1, 0).setScrollFactor(0);
     this.phaseWarning = this.add
-      .text(width / 2, height * 0.2, 'ОСТОРОЖНО: ПОЯВИЛИСЬ ШИПЫ!', {
+      .text(width / 2, height * 0.2, PHASE_TWO_CONFIG.warningText, {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '26px',
         color: '#ffffff',
@@ -457,50 +453,55 @@ export class GameScene extends Phaser.Scene {
   }
 
   private ensureSpikesAhead(): void {
-    if (this.score < SPIKES_START_AFTER_FLIES) return;
+    if (this.score < PHASE_TWO_CONFIG.fliesToStart) return;
 
     if (!this.spikesActive) {
       this.spikesActive = true;
-      this.nextSpikeY = this.player.y - this.scale.height * 0.45;
+      this.nextSpikeY = this.player.y - this.scale.height * PHASE_TWO_CONFIG.firstSpikeLeadScreens;
       this.phaseWarning.setAlpha(1);
-      this.warningRemaining = SPIKE_WARNING_HOLD_SECONDS + SPIKE_WARNING_FADE_SECONDS;
+      this.warningRemaining =
+        PHASE_TWO_CONFIG.warningHoldSeconds + PHASE_TWO_CONFIG.warningFadeSeconds;
     }
 
-    const spawnLimit = this.player.y - this.scale.height * 1.4;
+    const spawnLimit =
+      this.player.y - this.scale.height * PHASE_TWO_CONFIG.spikeSpawnAheadScreens;
     while (this.nextSpikeY !== null && this.nextSpikeY > spawnLimit) {
       this.spawnSpikeCluster(this.nextSpikeY);
-      this.nextSpikeY -= SPIKE_SPAWN_INTERVAL;
+      this.nextSpikeY -= PHASE_TWO_CONFIG.spikeSpawnInterval;
     }
   }
 
   private updatePhaseWarning(seconds: number): void {
     if (this.warningRemaining <= 0) return;
     this.warningRemaining = Math.max(0, this.warningRemaining - seconds);
-    const alpha = Math.min(1, this.warningRemaining / SPIKE_WARNING_FADE_SECONDS);
+    const alpha = Math.min(1, this.warningRemaining / PHASE_TWO_CONFIG.warningFadeSeconds);
     this.phaseWarning.setAlpha(alpha);
   }
 
   private spawnSpikeCluster(y: number): void {
     const { width } = this.scale;
-    const clusterX = Phaser.Math.Between(width * 0.18, width * 0.82);
+    const clusterX = Phaser.Math.Between(
+      width * PHASE_TWO_CONFIG.clusterMinX,
+      width * PHASE_TWO_CONFIG.clusterMaxX,
+    );
 
-    for (const offsetX of [-24, 0, 24]) {
+    for (const offsetX of PHASE_TWO_CONFIG.spikeOffsetsX) {
       const x = Phaser.Math.Clamp(
         clusterX + offsetX,
-        WALL_WIDTH + SPIKE_HIT_RADIUS,
-        width - WALL_WIDTH - SPIKE_HIT_RADIUS,
+        WALL_WIDTH + PHASE_TWO_CONFIG.spikeHitRadius,
+        width - WALL_WIDTH - PHASE_TWO_CONFIG.spikeHitRadius,
       );
       const graphic = this.add.triangle(
         x,
         y,
         0,
-        30,
-        18,
+        PHASE_TWO_CONFIG.spikeHeight,
+        PHASE_TWO_CONFIG.spikeWidth / 2,
         0,
-        36,
-        30,
-        0xef4444,
-      ).setStrokeStyle(2, 0xfca5a5);
+        PHASE_TWO_CONFIG.spikeWidth,
+        PHASE_TWO_CONFIG.spikeHeight,
+        PHASE_TWO_CONFIG.spikeColor,
+      ).setStrokeStyle(2, PHASE_TWO_CONFIG.spikeStrokeColor);
       this.spikes.push({ x, y: y + 10, graphic });
     }
   }
@@ -509,9 +510,9 @@ export class GameScene extends Phaser.Scene {
     const hit = this.spikes.some(
       (spike) =>
         Phaser.Math.Distance.Between(this.player.x, this.player.y, spike.x, spike.y) <=
-        SPIKE_HIT_RADIUS,
+        PHASE_TWO_CONFIG.spikeHitRadius,
     );
-    if (hit) this.endGame('Паук напоролся на шипы!');
+    if (hit) this.endGame(PHASE_TWO_CONFIG.collisionMessage);
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
