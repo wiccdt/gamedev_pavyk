@@ -6,7 +6,7 @@ const FLY_RADIUS = 10;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
 const WATER_RISE_SPEED = 42;
-const SPIKES_START_AFTER_SECONDS = 60;
+const SPIKES_START_AFTER_FLIES = 3;
 const SPIKE_SPAWN_INTERVAL = 620;
 const SPIKE_HIT_RADIUS = 20;
 const SPIKE_WARNING_HOLD_SECONDS = 2.5;
@@ -457,7 +457,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private ensureSpikesAhead(): void {
-    if (this.elapsedGameTime < SPIKES_START_AFTER_SECONDS) return;
+    if (this.score < SPIKES_START_AFTER_FLIES) return;
 
     if (!this.spikesActive) {
       this.spikesActive = true;
