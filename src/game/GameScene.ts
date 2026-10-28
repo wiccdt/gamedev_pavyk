@@ -4,8 +4,10 @@ import { PHASE_TWO_CONFIG } from './phaseConfig';
 const WALL_WIDTH = 24;
 const PLAYER_RADIUS = 14;
 const FLY_RADIUS = 10;
+const FLY_COLLISION_RADIUS = 18;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
+const SWING_STEERING_ACCELERATION = 260;
 const WATER_RISE_SPEED = 42;
 const MAX_ATTACH_DISTANCE = 460;
 const REEL_SPEED = 150;
@@ -128,7 +130,7 @@ export class GameScene extends Phaser.Scene {
       .setScrollFactor(0);
 
     this.statusText = this.add
-      .text(width / 2, 54, 'Зажми точку — тянись; клик мимо — отпусти. A/D — ходьба, ПРОБЕЛ — прыжок, Esc/P — пауза.', {
+      .text(width / 2, 54, 'Зажми точку — тянись; клик мимо — отпусти. A/D — раскачка/ходьба, ПРОБЕЛ — прыжок, Esc/P — пауза.', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '16px',
         color: '#cbd5e1',
@@ -616,6 +618,11 @@ export class GameScene extends Phaser.Scene {
       const movingLeft = this.cursors.left.isDown || this.wasd.left.isDown;
       this.velocityX = Number(movingRight) * PLATFORM_MOVE_SPEED -
         Number(movingLeft) * PLATFORM_MOVE_SPEED;
+    } else if (this.anchor) {
+      const steeringRight = this.cursors.right.isDown || this.wasd.right.isDown;
+      const steeringLeft = this.cursors.left.isDown || this.wasd.left.isDown;
+      const direction = Number(steeringRight) - Number(steeringLeft);
+      this.velocityX += direction * SWING_STEERING_ACCELERATION * seconds;
     }
     const gravityMultiplier = this.anchor ? SWING_GRAVITY_MULTIPLIER : 1;
     this.velocityY += GRAVITY * gravityMultiplier * seconds;
@@ -644,9 +651,39 @@ export class GameScene extends Phaser.Scene {
       const radialVelocity = this.velocityX * normalX + this.velocityY * normalY;
       this.velocityX -= radialVelocity * normalX;
       this.velocityY -= radialVelocity * normalY;
+      this.resolveRopePlatformCollision(previousY);
     } else {
       this.keepSpiderInBounds(width);
       this.landOnPlatform(previousY);
+    }
+  }
+
+  private resolveRopePlatformCollision(previousY: number): void {
+    if (this.velocityY >= 0 || !this.anchor) return;
+
+    const previousTop = previousY - PLAYER_RADIUS;
+    const currentTop = this.player.y - PLAYER_RADIUS;
+
+    for (const platform of this.platforms) {
+      const overlapsHorizontally =
+        this.player.x >= platform.left - PLAYER_RADIUS &&
+        this.player.x <= platform.right + PLAYER_RADIUS;
+      const platformBottom = platform.top + 18;
+      const crossedUnderside =
+        previousTop >= platformBottom && currentTop <= platformBottom;
+      if (!overlapsHorizontally || !crossedUnderside) continue;
+
+      this.player.y = platformBottom + PLAYER_RADIUS;
+      this.ropeLength = Phaser.Math.Distance.Between(
+        this.anchor.x,
+        this.anchor.y,
+        this.player.x,
+        this.player.y,
+      );
+      this.velocityY = Math.abs(this.velocityY) * 0.5;
+      this.isReeling = false;
+      this.statusText.setText('Платформа остановила подтягивание. Качайся или отпусти нить.');
+      return;
     }
   }
 
@@ -670,23 +707,40 @@ export class GameScene extends Phaser.Scene {
   }
 
   private landOnPlatform(previousY: number): void {
-    if (this.velocityY < 0) return;
-
     const previousBottom = previousY + PLAYER_RADIUS;
     const currentBottom = this.player.y + PLAYER_RADIUS;
-    const platform = this.platforms.find(
-      (item) =>
-        this.player.x >= item.left - PLAYER_RADIUS &&
-        this.player.x <= item.right + PLAYER_RADIUS &&
-        previousBottom <= item.top &&
-        currentBottom >= item.top,
-    );
-    if (!platform) return;
+    const previousTop = previousY - PLAYER_RADIUS;
+    const currentTop = this.player.y - PLAYER_RADIUS;
 
-    this.player.y = platform.top - PLAYER_RADIUS;
-    this.velocityY = 0;
-    this.velocityX *= 0.8;
-    this.isGrounded = true;
+    for (const platform of this.platforms) {
+      const overlapsHorizontally =
+        this.player.x >= platform.left - PLAYER_RADIUS &&
+        this.player.x <= platform.right + PLAYER_RADIUS;
+      if (!overlapsHorizontally) continue;
+
+      if (
+        this.velocityY >= 0 &&
+        previousBottom <= platform.top &&
+        currentBottom >= platform.top
+      ) {
+        this.player.y = platform.top - PLAYER_RADIUS;
+        this.velocityY = 0;
+        this.velocityX *= 0.8;
+        this.isGrounded = true;
+        return;
+      }
+
+      const platformBottom = platform.top + 18;
+      if (
+        this.velocityY < 0 &&
+        previousTop >= platformBottom &&
+        currentTop <= platformBottom
+      ) {
+        this.player.y = platformBottom + PLAYER_RADIUS;
+        this.velocityY = Math.abs(this.velocityY) * 0.5;
+        return;
+      }
+    }
   }
 
   private updateWater(): void {
@@ -703,7 +757,7 @@ export class GameScene extends Phaser.Scene {
         fly.x,
         fly.y,
       );
-      if (distance > PLAYER_RADIUS + FLY_RADIUS) return true;
+      if (distance > PLAYER_RADIUS + FLY_COLLISION_RADIUS) return true;
 
       fly.graphic.destroy();
       this.score += 1;
