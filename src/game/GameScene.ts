@@ -175,7 +175,6 @@ export class GameScene extends Phaser.Scene {
     this.attachTo(startingAnchor);
 
     this.input.on('pointerdown', this.handlePointerDown, this);
-    this.input.on('pointerup', this.stopReeling, this);
     this.cameras.main.scrollY = startingY - height * 0.68;
     this.createOverlays(width, height);
 
@@ -541,7 +540,7 @@ export class GameScene extends Phaser.Scene {
 
       this.attachTo(nearestAnchor);
       this.isReeling = true;
-      this.statusText.setText('Паутина подтягивает! Отпусти кнопку, чтобы раскачаться.');
+      this.statusText.setText('Паутина подтягивает! Нажми ПРОБЕЛ, чтобы остановить подтягивание и раскачиваться.');
       return;
     }
 
@@ -589,11 +588,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   private stopReeling(): void {
+    if (!this.anchor) return;
     this.isReeling = false;
   }
 
   private jumpFromPlatform(): void {
-    if (this.gameOver || !this.isGrounded || this.anchor) return;
+    if (this.gameOver || this.paused) return;
+    if (this.anchor) {
+      this.stopReeling();
+      this.statusText.setText('Подтягивание остановлено — раскачивайся и кликай в пустоту, чтобы отпустить нить.');
+      return;
+    }
+    if (!this.isGrounded) return;
+
     this.isGrounded = false;
     this.velocityY = -PLATFORM_JUMP_SPEED;
     this.statusText.setText('Прыгни к голубой точке и нажми на неё, чтобы зацепиться.');
