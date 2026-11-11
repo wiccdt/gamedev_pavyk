@@ -8,7 +8,7 @@ const FLY_COLLISION_RADIUS = 18;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
 const SWING_STEERING_ACCELERATION = 260;
-const WATER_RISE_SPEED = 42;
+const WATER_RISE_SPEED = 60;
 const MAX_ATTACH_DISTANCE = 460;
 const REEL_SPEED = 150;
 const MIN_ROPE_LENGTH = 72;
@@ -17,11 +17,21 @@ const PLATFORM_JUMP_SPEED = 390;
 const PLATFORM_MOVE_SPEED = 220;
 const WORLD_HEIGHT_MULTIPLIER = 4;
 const WORLD_CHUNK_HEIGHT = 1.2;
+const LEADERBOARD_KEY = 'spider-game-leaderboard';
+const LEADERBOARD_LIMIT = 10;
+const LEADERBOARD_DISPLAY_LIMIT = 5;
+
+type LeaderboardEntry = {
+  name: string;
+  score: number;
+  date: string;
+};
 
 type AnchorPoint = {
   x: number;
   y: number;
   marker: Phaser.GameObjects.Arc;
+  halo: Phaser.GameObjects.Arc;
 };
 
 type Platform = {
@@ -29,31 +39,41 @@ type Platform = {
   right: number;
   top: number;
   graphic: Phaser.GameObjects.Rectangle;
+  leaf: Phaser.GameObjects.Ellipse;
 };
 
 type Spike = {
   x: number;
   y: number;
   graphic: Phaser.GameObjects.Triangle;
+  highlight: Phaser.GameObjects.Triangle;
 };
 
 type Fly = {
   x: number;
   y: number;
-  graphic: Phaser.GameObjects.Arc;
+  graphic: Phaser.GameObjects.Arc | Phaser.GameObjects.Image;
 };
 
 export class GameScene extends Phaser.Scene {
-  private player!: Phaser.GameObjects.Arc;
+  private player!: Phaser.GameObjects.Arc | Phaser.GameObjects.Image;
   private rope!: Phaser.GameObjects.Graphics;
-  private water!: Phaser.GameObjects.Rectangle;
+  private water!: Phaser.GameObjects.Graphics;
+  private waterGlow!: Phaser.GameObjects.Ellipse;
+  private parallaxObjects: Array<{ object: Phaser.GameObjects.GameObject; worldY: number }> = [];
   private scoreText!: Phaser.GameObjects.Text;
   private timerText!: Phaser.GameObjects.Text;
-  private statusText!: Phaser.GameObjects.Text;
   private pauseOverlay!: Phaser.GameObjects.Container;
   private gameOverOverlay!: Phaser.GameObjects.Container;
+  private menuOverlay!: Phaser.GameObjects.Container;
+  private recordsOverlay!: Phaser.GameObjects.Container;
   private gameOverText!: Phaser.GameObjects.Text;
+  private gameOverLeaderboardText!: Phaser.GameObjects.Text;
+  private menuLeaderboardText!: Phaser.GameObjects.Text;
   private phaseWarning!: Phaser.GameObjects.Text;
+  private maxHeightReached = 0;
+  private startingY = 0;
+  private finalScore = 0;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<'left' | 'right', Phaser.Input.Keyboard.Key>;
   private pauseKey!: Phaser.Input.Keyboard.Key;
@@ -71,12 +91,16 @@ export class GameScene extends Phaser.Scene {
   private velocityY = 0;
   private waterY = 0;
   private worldHeight = 0;
+  private parallaxOriginY = 0;
   private generatedTop = 0;
   private elapsedGameTime = 0;
   private warningRemaining = 0;
   private nextSpikeY: number | null = null;
   private score = 0;
   private spikesActive = false;
+  private gameStarted = false;
+  private menuShowingRecords = false;
+  private leaderboardUnavailable = false;
   private gameOver = false;
   private paused = false;
 
@@ -84,12 +108,21 @@ export class GameScene extends Phaser.Scene {
     super('GameScene');
   }
 
+  preload(): void {
+    this.load.image('spider', new URL('../spider.png', import.meta.url).href);
+    this.load.image('fly', new URL('../fly.png', import.meta.url).href);
+  }
+
   create(): void {
     const { width, height } = this.scale;
     const worldHeight = height * WORLD_HEIGHT_MULTIPLIER;
     const startingY = height * 3.5;
+    this.parallaxOriginY = startingY - height * 0.68;
+    this.startingY = startingY;
     this.worldHeight = worldHeight;
     this.score = 0;
+    this.maxHeightReached = 0;
+    this.finalScore = 0;
     this.velocityX = 0;
     this.velocityY = 0;
     this.anchor = null;
@@ -104,71 +137,75 @@ export class GameScene extends Phaser.Scene {
     this.warningRemaining = 0;
     this.nextSpikeY = null;
     this.spikesActive = false;
+    this.gameStarted = false;
+    this.menuShowingRecords = false;
+    this.leaderboardUnavailable = false;
     this.waterY = worldHeight;
     this.gameOver = false;
     this.paused = false;
+    this.parallaxObjects = [];
+    this.cameras.main.setBackgroundColor('#080b20');
 
     this.wallSegments.push(
-      this.add.rectangle(WALL_WIDTH / 2, worldHeight / 2, WALL_WIDTH, worldHeight, 0x475569),
-      this.add.rectangle(
-        width - WALL_WIDTH / 2,
-        worldHeight / 2,
-        WALL_WIDTH,
-        worldHeight,
-        0x475569,
-      ),
+      this.createWallSegment(WALL_WIDTH / 2, worldHeight / 2, WALL_WIDTH, worldHeight),
+      this.createWallSegment(width - WALL_WIDTH / 2, worldHeight / 2, WALL_WIDTH, worldHeight),
     );
+    this.createNightSky(width, height, worldHeight);
 
     this.add
       .text(width / 2, 18, 'ПАУК', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '28px',
-        color: '#ffffff',
+        color: '#f1f5f9',
         fontStyle: 'bold',
       })
       .setOrigin(0.5, 0)
       .setScrollFactor(0);
 
-    this.statusText = this.add
-      .text(width / 2, 54, 'Зажми точку — тянись; клик мимо — отпусти. A/D — раскачка/ходьба, ПРОБЕЛ — прыжок, Esc/P — пауза.', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '16px',
-        color: '#cbd5e1',
-      })
-      .setOrigin(0.5, 0)
-      .setScrollFactor(0);
-
-    this.scoreText = this.add.text(24, 24, 'Мухи: 0', {
+    this.scoreText = this.add.text(24, 24, 'Очки: 0 | Мухи: 0', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: '21px',
-      color: '#ffffff',
-    }).setScrollFactor(0);
+      color: '#f1f5f9',
+    }).setScrollFactor(0).setDepth(12);
     this.timerText = this.add.text(width - 24, 24, 'Время: 00:00', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: '21px',
-      color: '#ffffff',
-    }).setOrigin(1, 0).setScrollFactor(0);
+      color: '#f1f5f9',
+    }).setOrigin(1, 0).setScrollFactor(0).setDepth(12);
+    const hudPanels = this.add.graphics().setScrollFactor(0).setDepth(11);
+    hudPanels.fillStyle(0x0f172a, 0.72);
+    hudPanels.lineStyle(1, 0x94a3b8, 0.3);
+    hudPanels.fillRoundedRect(14, 16, 250, 40, 10);
+    hudPanels.strokeRoundedRect(14, 16, 250, 40, 10);
+    hudPanels.fillRoundedRect(width - 198, 16, 184, 40, 10);
+    hudPanels.strokeRoundedRect(width - 198, 16, 184, 40, 10);
     this.phaseWarning = this.add
       .text(width / 2, height * 0.2, PHASE_TWO_CONFIG.warningText, {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '26px',
-        color: '#ffffff',
-        backgroundColor: '#991b1b',
+        color: '#f1f5f9',
+        backgroundColor: '#7f1d1d',
         padding: { x: 18, y: 12 },
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
       .setScrollFactor(0)
       .setAlpha(0);
+    this.createControlHint(height);
 
     this.createPlatforms(width, height, startingY);
     this.createAnchorPoints(width, height, startingY);
     this.createStartingFlies(width, height, startingY);
     this.generatedTop = Math.min(...this.anchorPoints.map((point) => point.y));
 
-    this.water = this.add.rectangle(width / 2, worldHeight, width, 0, 0x0ea5e9, 0.8);
-    this.rope = this.add.graphics();
-    this.player = this.add.circle(width * 0.3, startingY, PLAYER_RADIUS, 0xf8fafc);
+    this.water = this.add.graphics().setDepth(2);
+    this.waterGlow = this.add.ellipse(width / 2, worldHeight, 120, 34, 0x67e8f9, 0.12)
+      .setDepth(3);
+    this.rope = this.add.graphics().setDepth(7);
+    this.player = this.textures.exists('spider')
+      ? this.add.image(width * 0.3, startingY, 'spider').setDisplaySize(38, 38)
+      : this.add.circle(width * 0.3, startingY, PLAYER_RADIUS, 0xf1f5f9);
+    this.player.setDepth(8);
 
     const startingAnchor = this.anchorPoints[0];
     if (!startingAnchor) {
@@ -179,6 +216,7 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', this.handlePointerDown, this);
     this.cameras.main.scrollY = startingY - height * 0.68;
     this.createOverlays(width, height);
+    this.showMenu();
 
     if (!this.input.keyboard) {
       throw new Error('Keyboard input is unavailable.');
@@ -199,7 +237,7 @@ export class GameScene extends Phaser.Scene {
       Phaser.Input.Keyboard.JustDown(this.escapeKey)) {
       this.togglePause();
     }
-    if (this.gameOver || this.paused) return;
+    if (!this.gameStarted || this.gameOver || this.paused) return;
 
     const seconds = Math.min(delta / 1000, 0.05);
     this.elapsedGameTime += seconds;
@@ -208,8 +246,13 @@ export class GameScene extends Phaser.Scene {
     this.waterY -= WATER_RISE_SPEED * seconds;
     this.ensureWorldAhead();
     this.ensureSpikesAhead();
-    this.updateWater();
+    this.updateWater(_time);
     this.updateSpider(seconds);
+    this.maxHeightReached = Math.max(
+      this.maxHeightReached,
+      this.startingY - this.player.y,
+    );
+    this.updateScoreText();
     this.updateCamera(seconds);
     this.checkFly();
     this.checkSpikeCollision();
@@ -221,9 +264,85 @@ export class GameScene extends Phaser.Scene {
 
     this.rope.clear();
     if (this.anchor) {
-      this.rope.lineStyle(3, 0xe2e8f0, 1);
+      this.rope.lineStyle(5, 0x67e8f9, 0.18);
+      this.rope.lineBetween(this.anchor.x, this.anchor.y, this.player.x, this.player.y);
+      this.rope.lineStyle(1.5, 0xe0f2fe, 0.92);
       this.rope.lineBetween(this.anchor.x, this.anchor.y, this.player.x, this.player.y);
     }
+  }
+
+  private createNightSky(width: number, height: number, worldHeight: number): void {
+    const sky = this.add.graphics().setScrollFactor(0).setDepth(-100);
+    sky.fillGradientStyle(0x080b20, 0x080b20, 0x21143b, 0x21143b, 1);
+    sky.fillRect(0, 0, width, height);
+
+    const moonY = this.parallaxY(this.parallaxOriginY + 120, 0.12);
+    this.add.ellipse(width * 0.78, moonY, 150, 150, 0x93c5fd, 0.08)
+      .setScrollFactor(0.12)
+      .setDepth(-96);
+    this.add.circle(width * 0.78, moonY, 34, 0xfef3c7, 0.9)
+      .setScrollFactor(0.12)
+      .setDepth(-95);
+
+    const stars = this.add.graphics().setScrollFactor(0.2).setDepth(-90);
+    stars.fillStyle(0xe0e7ff, 0.62);
+    for (let index = 0; index < 100; index += 1) {
+      const x = Phaser.Math.Between(32, width - 32);
+      const y = this.parallaxY(Phaser.Math.Between(0, worldHeight), 0.2);
+      const radius = Phaser.Math.FloatBetween(0.7, 1.8);
+      stars.fillCircle(x, y, radius);
+    }
+
+    const branches = this.add.graphics().setScrollFactor(0.46).setDepth(-80);
+    branches.lineStyle(11, 0x172b32, 0.8);
+    for (let worldY = -40; worldY < worldHeight; worldY += 360) {
+      const y = this.parallaxY(worldY, 0.46);
+      branches.beginPath();
+      branches.moveTo(0, y + 100);
+      branches.lineTo(width * 0.12, y + 68);
+      branches.lineTo(width * 0.22, y + 90);
+      branches.moveTo(width, y + 190);
+      branches.lineTo(width * 0.88, y + 152);
+      branches.lineTo(width * 0.78, y + 174);
+      branches.strokePath();
+      branches.fillStyle(0x29433a, 0.76);
+      branches.fillEllipse(width * 0.18, y + 70, 42, 16);
+      branches.fillEllipse(width * 0.84, y + 158, 48, 17);
+    }
+  }
+
+  private createWallSegment(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ): Phaser.GameObjects.Rectangle {
+    return this.add
+      .rectangle(x, y, width, height, 0x334155, 0.78)
+      .setStrokeStyle(1, 0x64748b, 0.45);
+  }
+
+  private parallaxY(worldY: number, scrollFactor: number): number {
+    return worldY - (1 - scrollFactor) * this.parallaxOriginY;
+  }
+
+  private createAnchorPoint(x: number, y: number): AnchorPoint {
+    const halo = this.add.circle(x, y, 19, 0x67e8f9, 0.16).setDepth(4);
+    const marker = this.add.circle(x, y, 8, 0xa5f3fc)
+      .setStrokeStyle(2, 0xe0f2fe, 0.9)
+      .setDepth(5);
+    return { x, y, marker, halo };
+  }
+
+  private createPlatform(x: number, y: number, width: number): Platform {
+    const graphic = this.add
+      .rectangle(x, y, width, 18, 0x3f6212)
+      .setStrokeStyle(2, 0xa3a35a, 0.9)
+      .setDepth(4);
+    const leaf = this.add.ellipse(x, y - 10, Math.min(64, width * 0.32), 13, 0x65a30d)
+      .setStrokeStyle(1, 0xb7d17c, 0.8)
+      .setDepth(5);
+    return { left: x - width / 2, right: x + width / 2, top: y - 9, graphic, leaf };
   }
 
   private createAnchorPoints(width: number, height: number, startingY: number): void {
@@ -243,10 +362,7 @@ export class GameScene extends Phaser.Scene {
     ];
 
     this.anchorPoints = layout.map(({ x, rise }) => {
-      const pointX = width * x;
-      const pointY = startingY - height * rise;
-      const marker = this.add.circle(pointX, pointY, 9, 0x38bdf8).setStrokeStyle(3, 0xe0f2fe);
-      return { x: pointX, y: pointY, marker };
+      return this.createAnchorPoint(width * x, startingY - height * rise);
     });
   }
 
@@ -266,8 +382,35 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private createControlHint(height: number): void {
+    const background = this.add
+      .rectangle(16, height - 86, 440, 70, 0x020617, 0.7)
+      .setOrigin(0);
+    const hint = this.add
+      .text(
+        28,
+        height - 78,
+        'Клик по точке — зацепиться    •    Клик мимо — отпустить\nПробел — стоп / прыжок    •    A/D или ←/→ — качаться / идти\nEsc/P — пауза',
+        {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: '13px',
+          color: '#f1f5f9',
+          lineSpacing: 4,
+        },
+      )
+      .setOrigin(0);
+    this.add
+      .container(0, 0, [background, hint])
+      .setScrollFactor(0)
+      .setDepth(10)
+      .setAlpha(0.9);
+  }
+
   private addFly(x: number, y: number): void {
-    const graphic = this.add.circle(x, y, FLY_RADIUS, 0xfacc15);
+    const graphic = this.textures.exists('fly')
+      ? this.add.image(x, y, 'fly').setDisplaySize(28, 28)
+      : this.add.circle(x, y, FLY_RADIUS, 0xfacc15);
+    graphic.setDepth(6);
     this.flies.push({ x, y, graphic });
   }
 
@@ -278,6 +421,10 @@ export class GameScene extends Phaser.Scene {
     this.timerText.setText(`Время: ${minutes}:${seconds}`);
   }
 
+  private updateScoreText(): void {
+    this.scoreText.setText(`Очки: ${this.getCurrentPoints()} | Мухи: ${this.score}`);
+  }
+
   private createPlatforms(width: number, height: number, startingY: number): void {
     const platformSpecs = [
       { x: width * 0.32, y: startingY - height * 0.75, width: 190 },
@@ -285,21 +432,9 @@ export class GameScene extends Phaser.Scene {
       { x: width * 0.36, y: startingY - height * 2.75, width: 190 },
     ];
 
-    this.platforms = platformSpecs.map((platform) => {
-      const graphic = this.add.rectangle(
-        platform.x,
-        platform.y,
-        platform.width,
-        18,
-        0x94a3b8,
-      );
-      return {
-        left: platform.x - platform.width / 2,
-        right: platform.x + platform.width / 2,
-        top: platform.y - 9,
-        graphic,
-      };
-    });
+    this.platforms = platformSpecs.map((platform) =>
+      this.createPlatform(platform.x, platform.y, platform.width),
+    );
   }
 
   private createOverlays(width: number, height: number): void {
@@ -315,7 +450,7 @@ export class GameScene extends Phaser.Scene {
       .text(width / 2, height / 2, 'ПАУЗА\nНажми Esc или P, чтобы продолжить', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '30px',
-        color: '#ffffff',
+        color: '#f1f5f9',
         align: 'center',
         lineSpacing: 12,
       })
@@ -324,6 +459,127 @@ export class GameScene extends Phaser.Scene {
       .container(0, 0, [pauseBackground, pauseText])
       .setScrollFactor(0)
       .setDepth(100)
+      .setVisible(false);
+
+    const menuBackground = this.add.rectangle(
+      width / 2,
+      height / 2,
+      width,
+      height,
+      0x020617,
+      0.94,
+    );
+    const menuTitle = this.add
+      .text(width / 2, 82, 'ПАУК', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '48px',
+        color: '#f1f5f9',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    const menuInstructions = this.add
+      .text(
+        width / 2,
+        150,
+        'Клик по голубой точке — зацепиться и подтянуться\n' +
+          'ПРОБЕЛ — остановить подтягивание / прыгнуть с платформы\n' +
+          'A/D или стрелки — раскачка на нити / ходьба по платформе\n' +
+          'Клик в пустоту — отпустить нить\n' +
+          'Esc/P — пауза',
+        {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: '18px',
+          color: '#f1f5f9',
+          align: 'center',
+          lineSpacing: 8,
+        },
+      )
+      .setOrigin(0.5, 0);
+    const startButton = this.add.rectangle(
+      width / 2,
+      height * 0.72,
+      260,
+      58,
+      0x0e7490,
+    ).setStrokeStyle(2, 0x67e8f9, 0.75);
+    const startLabel = this.add
+      .text(width / 2, height * 0.72, 'Начать игру', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '23px',
+        color: '#f1f5f9',
+      })
+      .setOrigin(0.5);
+    const openRecordsButton = this.add.rectangle(
+      width / 2,
+      height * 0.84,
+      260,
+      52,
+      0x1e293b,
+    ).setStrokeStyle(1, 0x94a3b8, 0.5);
+    const openRecordsLabel = this.add
+      .text(width / 2, height * 0.84, 'Рекорды', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '21px',
+        color: '#f1f5f9',
+      })
+      .setOrigin(0.5);
+    this.menuOverlay = this.add
+      .container(0, 0, [
+        menuBackground,
+        menuTitle,
+        menuInstructions,
+        startButton,
+        startLabel,
+        openRecordsButton,
+        openRecordsLabel,
+      ])
+      .setScrollFactor(0)
+      .setDepth(200)
+      .setVisible(false);
+
+    const recordsBackground = this.add.rectangle(
+      width / 2,
+      height / 2,
+      width,
+      height,
+      0x020617,
+      0.96,
+    );
+    const recordsTitle = this.add
+      .text(width / 2, 100, 'РЕКОРДЫ', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '36px',
+        color: '#f1f5f9',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    this.menuLeaderboardText = this.add
+      .text(width / 2, 170, '', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '20px',
+        color: '#f1f5f9',
+        align: 'center',
+        lineSpacing: 10,
+      })
+      .setOrigin(0.5, 0);
+    const backButton = this.add.rectangle(
+      width / 2,
+      height * 0.86,
+      240,
+      54,
+      0x334155,
+    );
+    const backLabel = this.add
+      .text(width / 2, height * 0.86, 'Назад', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '21px',
+        color: '#f1f5f9',
+      })
+      .setOrigin(0.5);
+    this.recordsOverlay = this.add
+      .container(0, 0, [recordsBackground, recordsTitle, this.menuLeaderboardText, backButton, backLabel])
+      .setScrollFactor(0)
+      .setDepth(201)
       .setVisible(false);
 
     const gameOverBackground = this.add.rectangle(
@@ -335,33 +591,160 @@ export class GameScene extends Phaser.Scene {
       0.82,
     );
     this.gameOverText = this.add
-      .text(width / 2, height / 2 - 70, '', {
+      .text(width / 2, 92, '', {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: '28px',
+        fontSize: '24px',
         color: '#ffffff',
         align: 'center',
       })
       .setOrigin(0.5);
+    const leaderboardTitle = this.add
+      .text(width / 2, 178, 'ТОП-5 РЕКОРДОВ', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '21px',
+        color: '#facc15',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    this.gameOverLeaderboardText = this.add
+      .text(width / 2, 215, '', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '18px',
+        color: '#f1f5f9',
+        align: 'center',
+        lineSpacing: 6,
+      })
+      .setOrigin(0.5, 0);
     const restartButton = this.add
-      .rectangle(width / 2, height / 2 + 45, 250, 58, 0x0284c7);
+      .rectangle(width / 2, height - 52, 250, 58, 0x0e7490)
+      .setStrokeStyle(2, 0x67e8f9, 0.75);
     const restartLabel = this.add
-      .text(width / 2, height / 2 + 45, 'Начать сначала', {
+      .text(width / 2, height - 52, 'Начать сначала', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '22px',
-        color: '#ffffff',
+        color: '#f1f5f9',
       })
       .setOrigin(0.5);
     this.gameOverOverlay = this.add
-      .container(0, 0, [gameOverBackground, this.gameOverText, restartButton, restartLabel])
+      .container(0, 0, [
+        gameOverBackground,
+        this.gameOverText,
+        leaderboardTitle,
+        this.gameOverLeaderboardText,
+        restartButton,
+        restartLabel,
+      ])
       .setScrollFactor(0)
       .setDepth(101)
       .setVisible(false);
   }
 
+  private showMenu(): void {
+    this.gameStarted = false;
+    this.menuShowingRecords = false;
+    this.menuOverlay.setVisible(true);
+    this.recordsOverlay.setVisible(false);
+    this.menuLeaderboardText.setText(this.formatLeaderboard(this.loadLeaderboard()));
+  }
+
+  private startGame(): void {
+    this.gameStarted = true;
+    this.menuOverlay.setVisible(false);
+    this.recordsOverlay.setVisible(false);
+  }
+
+  private showMenuRecords(): void {
+    this.menuShowingRecords = true;
+    this.menuLeaderboardText.setText(this.formatLeaderboard(this.loadLeaderboard()));
+    this.menuOverlay.setVisible(false);
+    this.recordsOverlay.setVisible(true);
+  }
+
+  private formatLeaderboard(entries: LeaderboardEntry[]): string {
+    if (this.leaderboardUnavailable) return 'Таблица рекордов недоступна в этом браузере.';
+    if (entries.length === 0) return 'Рекордов пока нет. Сыграй первую партию!';
+
+    return entries
+      .slice(0, LEADERBOARD_DISPLAY_LIMIT)
+      .map((entry, index) => `${index + 1}. ${entry.name} — ${entry.score}`)
+      .join('\n');
+  }
+
+  private loadLeaderboard(): LeaderboardEntry[] {
+    this.leaderboardUnavailable = false;
+    try {
+      const saved = window.localStorage.getItem(LEADERBOARD_KEY);
+      if (!saved) return [];
+
+      const parsed: unknown = JSON.parse(saved);
+      if (!Array.isArray(parsed)) return [];
+
+      return parsed
+        .filter((item): item is LeaderboardEntry => {
+          if (typeof item !== 'object' || item === null) return false;
+          const entry = item as Record<string, unknown>;
+          return (
+            typeof entry.name === 'string' &&
+            typeof entry.score === 'number' &&
+            Number.isFinite(entry.score) &&
+            typeof entry.date === 'string'
+          );
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, LEADERBOARD_LIMIT);
+    } catch (error) {
+      this.leaderboardUnavailable = true;
+      console.warn('Не удалось прочитать локальную таблицу рекордов.', error);
+      return [];
+    }
+  }
+
+  private saveLeaderboardEntry(name: string, score: number): void {
+    const entries = this.loadLeaderboard();
+    if (this.leaderboardUnavailable) return;
+
+    entries.push({ name, score, date: new Date().toISOString() });
+    entries.sort((a, b) => b.score - a.score);
+
+    try {
+      window.localStorage.setItem(
+        LEADERBOARD_KEY,
+        JSON.stringify(entries.slice(0, LEADERBOARD_LIMIT)),
+      );
+    } catch (error) {
+      this.leaderboardUnavailable = true;
+      console.warn('Не удалось сохранить результат в локальную таблицу рекордов.', error);
+    }
+  }
+
+  private askForRecordName(): void {
+    let inputName: string | null;
+    try {
+      inputName = window.prompt('Введите имя для таблицы рекордов:', 'Паук');
+    } catch (error) {
+      console.warn('Браузер не разрешил запросить имя игрока.', error);
+      return;
+    }
+
+    if (inputName === null) return;
+    const name = inputName.trim().slice(0, 20) || 'Паук';
+    this.saveLeaderboardEntry(name, this.finalScore);
+  }
+
+  private getCurrentPoints(): number {
+    return this.score * 10 + Math.floor(this.maxHeightReached / 50);
+  }
+
   private togglePause(): void {
-    if (this.gameOver) return;
+    if (!this.gameStarted || this.gameOver) return;
     this.paused = !this.paused;
-    this.pauseOverlay.setVisible(this.paused);
+    this.tweens.killTweensOf(this.pauseOverlay);
+    if (this.paused) {
+      this.pauseOverlay.setAlpha(0).setVisible(true);
+      this.tweens.add({ targets: this.pauseOverlay, alpha: 1, duration: 250 });
+    } else {
+      this.pauseOverlay.setVisible(false).setAlpha(1);
+    }
     if (this.paused) this.isReeling = false;
   }
 
@@ -379,29 +762,17 @@ export class GameScene extends Phaser.Scene {
     const nextTop = previousTop - chunkHeight;
 
     this.wallSegments.push(
-      this.add.rectangle(
-        WALL_WIDTH / 2,
-        (previousTop + nextTop) / 2,
-        WALL_WIDTH,
-        chunkHeight + 2,
-        0x475569,
-      ),
-      this.add.rectangle(
-        width - WALL_WIDTH / 2,
-        (previousTop + nextTop) / 2,
-        WALL_WIDTH,
-        chunkHeight + 2,
-        0x475569,
-      ),
+      this.createWallSegment(WALL_WIDTH / 2, (previousTop + nextTop) / 2, WALL_WIDTH, chunkHeight + 2),
+      this.createWallSegment(width - WALL_WIDTH / 2, (previousTop + nextTop) / 2, WALL_WIDTH, chunkHeight + 2),
     );
+    this.createParallaxChunk(width, previousTop, chunkHeight);
 
     const xPositions = [0.38, 0.62, 0.84, 0.62, 0.38];
     const rises = [0.12, 0.3, 0.48, 0.66, 0.84];
     for (let index = 0; index < rises.length; index += 1) {
       const x = width * xPositions[index]!;
       const y = previousTop - chunkHeight * rises[index]!;
-      const marker = this.add.circle(x, y, 9, 0x38bdf8).setStrokeStyle(3, 0xe0f2fe);
-      this.anchorPoints.push({ x, y, marker });
+      this.anchorPoints.push(this.createAnchorPoint(x, y));
     }
 
     this.addFly(width * 0.28, previousTop - chunkHeight * 0.36);
@@ -410,27 +781,57 @@ export class GameScene extends Phaser.Scene {
     const platformX = width * (this.platforms.length % 2 === 0 ? 0.32 : 0.7);
     const platformY = previousTop - chunkHeight * 0.72;
     const platformWidth = 190;
-    const graphic = this.add.rectangle(platformX, platformY, platformWidth, 18, 0x94a3b8);
-    this.platforms.push({
-      left: platformX - platformWidth / 2,
-      right: platformX + platformWidth / 2,
-      top: platformY - 9,
-      graphic,
-    });
+    this.platforms.push(this.createPlatform(platformX, platformY, platformWidth));
 
     this.generatedTop = nextTop;
   }
 
+  private createParallaxChunk(width: number, top: number, chunkHeight: number): void {
+    const stars = this.add.graphics().setScrollFactor(0.2).setDepth(-90);
+    stars.fillStyle(0xe0e7ff, 0.58);
+    for (let index = 0; index < 24; index += 1) {
+      stars.fillCircle(
+        Phaser.Math.Between(32, width - 32),
+        this.parallaxY(top - Phaser.Math.FloatBetween(0, chunkHeight), 0.2),
+        Phaser.Math.FloatBetween(0.7, 1.7),
+      );
+    }
+    this.parallaxObjects.push({ object: stars, worldY: top });
+
+    const leaves = this.add.graphics().setScrollFactor(0.46).setDepth(-80);
+    leaves.lineStyle(10, 0x172b32, 0.78);
+    leaves.beginPath();
+    leaves.moveTo(0, this.parallaxY(top - chunkHeight * 0.3, 0.46));
+    leaves.lineTo(width * 0.13, this.parallaxY(top - chunkHeight * 0.34, 0.46));
+    leaves.lineTo(width * 0.22, this.parallaxY(top - chunkHeight * 0.28, 0.46));
+    leaves.moveTo(width, this.parallaxY(top - chunkHeight * 0.7, 0.46));
+    leaves.lineTo(width * 0.88, this.parallaxY(top - chunkHeight * 0.74, 0.46));
+    leaves.lineTo(width * 0.78, this.parallaxY(top - chunkHeight * 0.68, 0.46));
+    leaves.strokePath();
+    leaves.fillStyle(0x29433a, 0.8);
+    leaves.fillEllipse(width * 0.18, this.parallaxY(top - chunkHeight * 0.34, 0.46), 42, 15);
+    leaves.fillEllipse(width * 0.84, this.parallaxY(top - chunkHeight * 0.72, 0.46), 48, 17);
+    this.parallaxObjects.push({ object: leaves, worldY: top });
+  }
+
   private removeSubmergedObjects(): void {
+    this.parallaxObjects = this.parallaxObjects.filter((decoration) => {
+      if (decoration.worldY < this.waterY) return true;
+      decoration.object.destroy();
+      return false;
+    });
+
     this.anchorPoints = this.anchorPoints.filter((point) => {
       if (point.y < this.waterY || point === this.anchor) return true;
       point.marker.destroy();
+      point.halo.destroy();
       return false;
     });
 
     this.platforms = this.platforms.filter((platform) => {
       if (platform.top < this.waterY) return true;
       platform.graphic.destroy();
+      platform.leaf.destroy();
       return false;
     });
 
@@ -443,6 +844,7 @@ export class GameScene extends Phaser.Scene {
     this.spikes = this.spikes.filter((spike) => {
       if (spike.y < this.waterY) return true;
       spike.graphic.destroy();
+      spike.highlight.destroy();
       return false;
     });
 
@@ -503,7 +905,35 @@ export class GameScene extends Phaser.Scene {
         PHASE_TWO_CONFIG.spikeHeight,
         PHASE_TWO_CONFIG.spikeColor,
       ).setStrokeStyle(2, PHASE_TWO_CONFIG.spikeStrokeColor);
-      this.spikes.push({ x, y: y + 10, graphic });
+      const highlight = this.add.triangle(
+        x,
+        y + 2,
+        PHASE_TWO_CONFIG.spikeWidth * 0.7,
+        PHASE_TWO_CONFIG.spikeHeight * 0.65,
+        PHASE_TWO_CONFIG.spikeWidth / 2,
+        0,
+        PHASE_TWO_CONFIG.spikeWidth * 0.3,
+        PHASE_TWO_CONFIG.spikeHeight * 0.65,
+        0xfda4af,
+      ).setAlpha(0.7);
+      graphic.setDepth(6).setScale(0.9).setAlpha(0.55);
+      highlight.setDepth(7).setScale(0.9).setAlpha(0.4);
+      this.tweens.add({
+        targets: [graphic, highlight],
+        scale: 1.08,
+        alpha: 1,
+        duration: 520,
+        yoyo: true,
+        repeat: -1,
+        delay: 500,
+      });
+      this.tweens.add({
+        targets: [graphic, highlight],
+        scale: 1,
+        alpha: 0.8,
+        duration: 350,
+      });
+      this.spikes.push({ x, y: y + 10, graphic, highlight });
     }
   }
 
@@ -518,11 +948,41 @@ export class GameScene extends Phaser.Scene {
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.gameOver) {
-      const buttonCenterY = this.scale.height / 2 + 45;
+      const buttonCenterY = this.scale.height - 52;
       const clickedRestart =
         Math.abs(pointer.x - this.scale.width / 2) <= 125 &&
         Math.abs(pointer.y - buttonCenterY) <= 29;
       if (clickedRestart) this.restart();
+      return;
+    }
+    if (!this.gameStarted) {
+      if (this.menuShowingRecords) {
+        const backCenterY = this.scale.height * 0.86;
+        if (
+          Math.abs(pointer.x - this.scale.width / 2) <= 120 &&
+          Math.abs(pointer.y - backCenterY) <= 27
+        ) {
+          this.menuShowingRecords = false;
+          this.recordsOverlay.setVisible(false);
+          this.menuOverlay.setVisible(true);
+        }
+        return;
+      }
+
+      const centerX = this.scale.width / 2;
+      const startCenterY = this.scale.height * 0.72;
+      const recordsCenterY = this.scale.height * 0.84;
+      if (
+        Math.abs(pointer.x - centerX) <= 130 &&
+        Math.abs(pointer.y - startCenterY) <= 29
+      ) {
+        this.startGame();
+      } else if (
+        Math.abs(pointer.x - centerX) <= 130 &&
+        Math.abs(pointer.y - recordsCenterY) <= 26
+      ) {
+        this.showMenuRecords();
+      }
       return;
     }
     if (this.paused) return;
@@ -536,20 +996,16 @@ export class GameScene extends Phaser.Scene {
         nearestAnchor.y,
       );
       if (distanceToAnchor > MAX_ATTACH_DISTANCE) {
-        this.statusText.setText('Подлети ближе к голубой точке, чтобы зацепиться.');
         return;
       }
 
       this.attachTo(nearestAnchor);
       this.isReeling = true;
-      this.statusText.setText('Паутина подтягивает! Нажми ПРОБЕЛ, чтобы остановить подтягивание и раскачиваться.');
       return;
     }
 
     if (this.anchor) {
       this.releaseThread();
-    } else {
-      this.statusText.setText('Нажми на голубую точку рядом с пауком, чтобы зацепиться.');
     }
   }
 
@@ -569,7 +1025,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private attachTo(point: AnchorPoint): void {
-    if (this.anchor) this.anchor.marker.setFillStyle(0x38bdf8);
+    if (this.anchor) {
+      this.anchor.marker.setFillStyle(0xa5f3fc);
+      this.anchor.halo.setAlpha(0.16);
+    }
     this.anchor = point;
     const distance = Phaser.Math.Distance.Between(
       this.player.x,
@@ -578,15 +1037,16 @@ export class GameScene extends Phaser.Scene {
       point.y,
     );
     this.ropeLength = Math.max(distance, 1);
-    point.marker.setFillStyle(0xf8fafc);
+    point.marker.setFillStyle(0xffffff);
+    point.halo.setAlpha(0.38);
   }
 
   private releaseThread(): void {
     if (!this.anchor || this.gameOver) return;
-    this.anchor.marker.setFillStyle(0x38bdf8);
+    this.anchor.marker.setFillStyle(0xa5f3fc);
+    this.anchor.halo.setAlpha(0.16);
     this.anchor = null;
     this.isReeling = false;
-    this.statusText.setText('Нить отпущена! Лети к следующей точке или нажми ПРОБЕЛ на платформе.');
   }
 
   private stopReeling(): void {
@@ -595,17 +1055,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private jumpFromPlatform(): void {
-    if (this.gameOver || this.paused) return;
+    if (!this.gameStarted || this.gameOver || this.paused) return;
     if (this.anchor) {
       this.stopReeling();
-      this.statusText.setText('Подтягивание остановлено — раскачивайся и кликай в пустоту, чтобы отпустить нить.');
       return;
     }
     if (!this.isGrounded) return;
 
     this.isGrounded = false;
     this.velocityY = -PLATFORM_JUMP_SPEED;
-    this.statusText.setText('Прыгни к голубой точке и нажми на неё, чтобы зацепиться.');
   }
 
   private updateSpider(seconds: number): void {
@@ -682,7 +1140,6 @@ export class GameScene extends Phaser.Scene {
       );
       this.velocityY = Math.abs(this.velocityY) * 0.5;
       this.isReeling = false;
-      this.statusText.setText('Платформа остановила подтягивание. Качайся или отпусти нить.');
       return;
     }
   }
@@ -743,10 +1200,28 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private updateWater(): void {
+  private updateWater(time: number): void {
     const { width } = this.scale;
-    this.water.setSize(width, this.worldHeight - this.waterY);
-    this.water.setPosition(width / 2, (this.worldHeight + this.waterY) / 2);
+    this.water.clear();
+    this.water.fillGradientStyle(0x67e8f9, 0x67e8f9, 0x082f49, 0x082f49, 0.9);
+    this.water.fillRect(0, this.waterY, width, Math.max(0, this.worldHeight - this.waterY));
+
+    this.water.lineStyle(3, 0xa5f3fc, 0.86);
+    this.water.beginPath();
+    for (let x = 0; x <= width; x += 12) {
+      const waveY = this.waterY + Math.sin(x * 0.035 + time * 0.003) * 5;
+      if (x === 0) this.water.moveTo(x, waveY);
+      else this.water.lineTo(x, waveY);
+    }
+    this.water.strokePath();
+
+    const distanceToWater = this.waterY - (this.player.y + PLAYER_RADIUS);
+    const glowAlpha = distanceToWater < 180
+      ? 0.08 + (1 - Math.max(0, distanceToWater) / 180) * (0.12 + Math.sin(time * 0.008) * 0.06)
+      : 0.04;
+    this.waterGlow
+      .setPosition(this.player.x, this.waterY - 10)
+      .setAlpha(glowAlpha);
   }
 
   private checkFly(): void {
@@ -759,22 +1234,69 @@ export class GameScene extends Phaser.Scene {
       );
       if (distance > PLAYER_RADIUS + FLY_COLLISION_RADIUS) return true;
 
-      fly.graphic.destroy();
+      this.tweens.add({
+        targets: fly.graphic,
+        scaleX: fly.graphic.scaleX * 1.8,
+        scaleY: fly.graphic.scaleY * 1.8,
+        alpha: 0,
+        duration: 180,
+        onComplete: () => fly.graphic.destroy(),
+      });
+      const flash = this.add.circle(fly.x, fly.y, 8, 0xfef08a, 0.85).setDepth(9);
+      this.tweens.add({
+        targets: flash,
+        scale: 2.4,
+        alpha: 0,
+        duration: 220,
+        onComplete: () => flash.destroy(),
+      });
+      const pointsText = this.add.text(fly.x, fly.y - 12, '+10', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '18px',
+        color: '#fef08a',
+        stroke: '#172554',
+        strokeThickness: 3,
+      }).setOrigin(0.5).setDepth(10);
+      this.tweens.add({
+        targets: pointsText,
+        y: fly.y - 42,
+        alpha: 0,
+        duration: 500,
+        onComplete: () => pointsText.destroy(),
+      });
       this.score += 1;
-      this.scoreText.setText(`Мухи: ${this.score}`);
+      this.updateScoreText();
       return false;
     });
   }
 
   private endGame(message = 'Вода поймала паука!'): void {
     this.gameOver = true;
+    this.cameras.main.shake(200, 0.01);
     this.paused = false;
     this.isReeling = false;
-    if (this.anchor) this.anchor.marker.setFillStyle(0x38bdf8);
+    this.finalScore = this.getCurrentPoints();
+    if (this.anchor) {
+      this.anchor.marker.setFillStyle(0xa5f3fc);
+      this.anchor.halo.setAlpha(0.16);
+    }
     this.anchor = null;
     this.pauseOverlay.setVisible(false);
-    this.gameOverText.setText(`${message}\nСъедено мух: ${this.score}`);
-    this.gameOverOverlay.setVisible(true);
+    this.gameOverText.setText(
+      `${message}\nСъедено мух: ${this.score}    Очки: ${this.finalScore}`,
+    );
+    this.gameOverLeaderboardText.setText(
+      this.formatLeaderboard(this.loadLeaderboard()),
+    );
+    this.gameOverOverlay.setAlpha(0).setVisible(true);
+    this.tweens.add({ targets: this.gameOverOverlay, alpha: 1, duration: 280 });
+    this.time.delayedCall(280, () => {
+      if (!this.scene.isActive()) return;
+      this.askForRecordName();
+      this.gameOverLeaderboardText.setText(
+        this.formatLeaderboard(this.loadLeaderboard()),
+      );
+    });
   }
 
   private restart(): void {
