@@ -1,5 +1,9 @@
 import Phaser from 'phaser';
-import { PHASE_TWO_CONFIG } from './phaseConfig';
+import {
+  PHASE_FOUR_CONFIG,
+  PHASE_THREE_CONFIG,
+  PHASE_TWO_CONFIG,
+} from './phaseConfig';
 
 const WALL_WIDTH = 24;
 const PLAYER_RADIUS = 14;
@@ -55,11 +59,28 @@ type Fly = {
   graphic: Phaser.GameObjects.Arc | Phaser.GameObjects.Image;
 };
 
+type Butterfly = {
+  baseX: number;
+  baseY: number;
+  graphic: Phaser.GameObjects.Arc | Phaser.GameObjects.Image;
+  spawnedAt: number;
+  phaseOffset: number;
+};
+
+type Ladybug = {
+  baseX: number;
+  baseY: number;
+  graphic: Phaser.GameObjects.Arc | Phaser.GameObjects.Container | Phaser.GameObjects.Image;
+  spawnedAt: number;
+  phaseOffset: number;
+};
+
 export class GameScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Arc | Phaser.GameObjects.Image;
   private rope!: Phaser.GameObjects.Graphics;
   private water!: Phaser.GameObjects.Graphics;
   private waterGlow!: Phaser.GameObjects.Ellipse;
+  private shieldAura!: Phaser.GameObjects.Arc;
   private parallaxObjects: Array<{ object: Phaser.GameObjects.GameObject; worldY: number }> = [];
   private scoreText!: Phaser.GameObjects.Text;
   private timerText!: Phaser.GameObjects.Text;
@@ -71,6 +92,7 @@ export class GameScene extends Phaser.Scene {
   private gameOverLeaderboardText!: Phaser.GameObjects.Text;
   private menuLeaderboardText!: Phaser.GameObjects.Text;
   private phaseWarning!: Phaser.GameObjects.Text;
+  private ladybugWarning!: Phaser.GameObjects.Text;
   private maxHeightReached = 0;
   private startingY = 0;
   private finalScore = 0;
@@ -81,6 +103,8 @@ export class GameScene extends Phaser.Scene {
   private anchorPoints: AnchorPoint[] = [];
   private platforms: Platform[] = [];
   private flies: Fly[] = [];
+  private butterflies: Butterfly[] = [];
+  private ladybugs: Ladybug[] = [];
   private spikes: Spike[] = [];
   private wallSegments: Phaser.GameObjects.Rectangle[] = [];
   private anchor: AnchorPoint | null = null;
@@ -95,9 +119,19 @@ export class GameScene extends Phaser.Scene {
   private generatedTop = 0;
   private elapsedGameTime = 0;
   private warningRemaining = 0;
+  private ladybugWarningRemaining = 0;
   private nextSpikeY: number | null = null;
+  private nextButterflyY: number | null = null;
+  private nextLadybugY: number | null = null;
   private score = 0;
+  private bonusPoints = 0;
+  private butterflySpawnCount = 0;
+  private ladybugSpawnCount = 0;
   private spikesActive = false;
+  private butterfliesActive = false;
+  private ladybugsActive = false;
+  private hasShield = false;
+  private shieldRemaining = 0;
   private gameStarted = false;
   private menuShowingRecords = false;
   private leaderboardUnavailable = false;
@@ -111,6 +145,8 @@ export class GameScene extends Phaser.Scene {
   preload(): void {
     this.load.image('spider', new URL('../spider.png', import.meta.url).href);
     this.load.image('fly', new URL('../fly.png', import.meta.url).href);
+    this.load.image('butterfly', new URL('../butterfly.png', import.meta.url).href);
+    this.load.image('bug', new URL('../bug.png', import.meta.url).href);
   }
 
   create(): void {
@@ -121,6 +157,9 @@ export class GameScene extends Phaser.Scene {
     this.startingY = startingY;
     this.worldHeight = worldHeight;
     this.score = 0;
+    this.bonusPoints = 0;
+    this.butterflySpawnCount = 0;
+    this.ladybugSpawnCount = 0;
     this.maxHeightReached = 0;
     this.finalScore = 0;
     this.velocityX = 0;
@@ -131,12 +170,21 @@ export class GameScene extends Phaser.Scene {
     this.anchorPoints = [];
     this.platforms = [];
     this.flies = [];
+    this.butterflies = [];
+    this.ladybugs = [];
     this.spikes = [];
     this.wallSegments = [];
     this.elapsedGameTime = 0;
     this.warningRemaining = 0;
+    this.ladybugWarningRemaining = 0;
     this.nextSpikeY = null;
+    this.nextButterflyY = null;
+    this.nextLadybugY = null;
     this.spikesActive = false;
+    this.butterfliesActive = false;
+    this.ladybugsActive = false;
+    this.hasShield = false;
+    this.shieldRemaining = 0;
     this.gameStarted = false;
     this.menuShowingRecords = false;
     this.leaderboardUnavailable = false;
@@ -191,6 +239,18 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setScrollFactor(0)
       .setAlpha(0);
+    this.ladybugWarning = this.add
+      .text(width / 2, height * 0.3, PHASE_FOUR_CONFIG.warningText, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '22px',
+        color: '#f1f5f9',
+        backgroundColor: '#991b1b',
+        padding: { x: 16, y: 10 },
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setAlpha(0);
     this.createControlHint(height);
 
     this.createPlatforms(width, height, startingY);
@@ -206,6 +266,16 @@ export class GameScene extends Phaser.Scene {
       ? this.add.image(width * 0.3, startingY, 'spider').setDisplaySize(38, 38)
       : this.add.circle(width * 0.3, startingY, PLAYER_RADIUS, 0xf1f5f9);
     this.player.setDepth(8);
+    this.shieldAura = this.add.circle(
+      this.player.x,
+      this.player.y,
+      PLAYER_RADIUS + 14,
+      0x86efac,
+      0.3,
+    )
+      .setStrokeStyle(3, 0xbbf7d0, 0.75)
+      .setDepth(7)
+      .setVisible(false);
 
     const startingAnchor = this.anchorPoints[0];
     if (!startingAnchor) {
@@ -243,11 +313,15 @@ export class GameScene extends Phaser.Scene {
     this.elapsedGameTime += seconds;
     this.updateTimer();
     this.updatePhaseWarning(seconds);
+    this.updateLadybugWarning(seconds);
     this.waterY -= WATER_RISE_SPEED * seconds;
     this.ensureWorldAhead();
     this.ensureSpikesAhead();
+    this.ensureButterfliesAhead();
+    this.ensureLadybugsAhead();
     this.updateWater(_time);
     this.updateSpider(seconds);
+    this.updateShield(seconds);
     this.maxHeightReached = Math.max(
       this.maxHeightReached,
       this.startingY - this.player.y,
@@ -255,6 +329,10 @@ export class GameScene extends Phaser.Scene {
     this.updateScoreText();
     this.updateCamera(seconds);
     this.checkFly();
+    this.updateButterflyPositions();
+    this.checkButterfly();
+    this.updateLadybugPositions();
+    this.checkLadybug();
     this.checkSpikeCollision();
     this.removeSubmergedObjects();
 
@@ -412,6 +490,225 @@ export class GameScene extends Phaser.Scene {
       : this.add.circle(x, y, FLY_RADIUS, 0xfacc15);
     graphic.setDepth(6);
     this.flies.push({ x, y, graphic });
+  }
+
+  private ensureButterfliesAhead(): void {
+    if (this.score < PHASE_THREE_CONFIG.fliesToStart) return;
+
+    if (!this.butterfliesActive) {
+      this.butterfliesActive = true;
+      this.nextButterflyY =
+        this.player.y - this.scale.height * PHASE_THREE_CONFIG.firstButterflyLeadScreens;
+      this.phaseWarning.setText(PHASE_THREE_CONFIG.warningText);
+      this.phaseWarning.setBackgroundColor('#6b21a8');
+      this.phaseWarning.setAlpha(1);
+      this.warningRemaining =
+        PHASE_THREE_CONFIG.warningHoldSeconds + PHASE_THREE_CONFIG.warningFadeSeconds;
+    }
+
+    const spawnLimit =
+      this.player.y - this.scale.height * PHASE_THREE_CONFIG.butterflySpawnAheadScreens;
+    while (this.nextButterflyY !== null && this.nextButterflyY > spawnLimit) {
+      this.spawnButterfly(this.nextButterflyY);
+      this.nextButterflyY -= PHASE_THREE_CONFIG.butterflySpawnInterval;
+    }
+  }
+
+  private spawnButterfly(y: number): void {
+    const sequence = this.butterflySpawnCount;
+    this.butterflySpawnCount += 1;
+    const baseX = this.scale.width * (sequence % 2 === 0 ? 0.3 : 0.7);
+    const graphic = this.textures.exists('butterfly')
+      ? this.add.image(baseX, y, 'butterfly').setDisplaySize(
+          PHASE_THREE_CONFIG.visualRadius * 2,
+          PHASE_THREE_CONFIG.visualRadius * 2,
+        )
+      : this.add.circle(baseX, y, PHASE_THREE_CONFIG.visualRadius, 0xf0abfc)
+          .setStrokeStyle(3, 0xfef3c7);
+    graphic.setDepth(7);
+    this.butterflies.push({
+      baseX,
+      baseY: y,
+      graphic,
+      spawnedAt: this.elapsedGameTime,
+      phaseOffset: sequence * Math.PI / 2,
+    });
+  }
+
+  private updateButterflyPositions(): void {
+    const angularSpeed = 2 * Math.PI / PHASE_THREE_CONFIG.trajectoryPeriodSeconds;
+    const minX = WALL_WIDTH + PHASE_THREE_CONFIG.visualRadius;
+    const maxX = this.scale.width - WALL_WIDTH - PHASE_THREE_CONFIG.visualRadius;
+
+    for (const butterfly of this.butterflies) {
+      const elapsed = this.elapsedGameTime - butterfly.spawnedAt;
+      const phase = elapsed * angularSpeed + butterfly.phaseOffset;
+      const x = butterfly.baseX +
+        Math.sin(phase) * PHASE_THREE_CONFIG.trajectoryAmplitudeX;
+      const y = butterfly.baseY +
+        Math.sin(phase + Math.PI / 2) * PHASE_THREE_CONFIG.trajectoryAmplitudeY;
+      butterfly.graphic.setPosition(Phaser.Math.Clamp(x, minX, maxX), y);
+    }
+  }
+
+  private checkButterfly(): void {
+    this.butterflies = this.butterflies.filter((butterfly) => {
+      const distance = Phaser.Math.Distance.Between(
+        this.player.x,
+        this.player.y,
+        butterfly.graphic.x,
+        butterfly.graphic.y,
+      );
+      if (distance > PLAYER_RADIUS + PHASE_THREE_CONFIG.collisionRadius) return true;
+
+      this.tweens.add({
+        targets: butterfly.graphic,
+        scaleX: butterfly.graphic.scaleX * 1.8,
+        scaleY: butterfly.graphic.scaleY * 1.8,
+        alpha: 0,
+        duration: 220,
+        onComplete: () => butterfly.graphic.destroy(),
+      });
+      const rewardText = this.add.text(
+        butterfly.graphic.x,
+        butterfly.graphic.y - 12,
+        `+${PHASE_THREE_CONFIG.scoreValue}`,
+        {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: '22px',
+          color: '#f0abfc',
+          stroke: '#312e81',
+          strokeThickness: 4,
+        },
+      ).setOrigin(0.5).setDepth(10);
+      this.tweens.add({
+        targets: rewardText,
+        y: butterfly.graphic.y - 48,
+        alpha: 0,
+        duration: 600,
+        onComplete: () => rewardText.destroy(),
+      });
+      this.bonusPoints += PHASE_THREE_CONFIG.scoreValue;
+      this.updateScoreText();
+      return false;
+    });
+  }
+
+  private ensureLadybugsAhead(): void {
+    if (this.score < PHASE_FOUR_CONFIG.fliesToStart) return;
+
+    if (!this.ladybugsActive) {
+      this.ladybugsActive = true;
+      this.nextLadybugY =
+        this.player.y - this.scale.height * PHASE_FOUR_CONFIG.firstLadybugLeadScreens;
+      this.ladybugWarning.setAlpha(1);
+      this.ladybugWarningRemaining =
+        PHASE_FOUR_CONFIG.warningHoldSeconds + PHASE_FOUR_CONFIG.warningFadeSeconds;
+    }
+
+    const spawnLimit =
+      this.player.y - this.scale.height * PHASE_FOUR_CONFIG.ladybugSpawnAheadScreens;
+    while (this.nextLadybugY !== null && this.nextLadybugY > spawnLimit) {
+      this.spawnLadybug(this.nextLadybugY);
+      this.nextLadybugY -= PHASE_FOUR_CONFIG.ladybugSpawnInterval;
+    }
+  }
+
+  private spawnLadybug(y: number): void {
+    const sequence = this.ladybugSpawnCount;
+    this.ladybugSpawnCount += 1;
+    const baseX = this.scale.width * (sequence % 2 === 0 ? 0.3 : 0.7);
+    const graphic = this.textures.exists('bug')
+      ? this.add.image(baseX, y, 'bug').setDisplaySize(
+          PHASE_FOUR_CONFIG.visualRadius * 2,
+          PHASE_FOUR_CONFIG.visualRadius * 2,
+        )
+      : this.add.container(baseX, y, [
+          this.add.circle(0, 0, PHASE_FOUR_CONFIG.visualRadius, 0xdc2626)
+            .setStrokeStyle(2, 0xfecaca),
+          this.add.circle(-7, -5, 3, 0x111827),
+          this.add.circle(7, -5, 3, 0x111827),
+          this.add.circle(-7, 6, 3, 0x111827),
+          this.add.circle(7, 6, 3, 0x111827),
+        ]);
+    graphic.setDepth(7);
+    this.ladybugs.push({
+      baseX,
+      baseY: y,
+      graphic,
+      spawnedAt: this.elapsedGameTime,
+      phaseOffset: sequence * Math.PI / 2,
+    });
+  }
+
+  private updateLadybugPositions(): void {
+    const angularSpeed = 2 * Math.PI / PHASE_FOUR_CONFIG.trajectoryPeriodSeconds;
+    const minX = WALL_WIDTH + PHASE_FOUR_CONFIG.visualRadius;
+    const maxX = this.scale.width - WALL_WIDTH - PHASE_FOUR_CONFIG.visualRadius;
+
+    for (const ladybug of this.ladybugs) {
+      const elapsed = this.elapsedGameTime - ladybug.spawnedAt;
+      const phase = elapsed * angularSpeed + ladybug.phaseOffset;
+      const x = ladybug.baseX +
+        Math.sin(phase) * PHASE_FOUR_CONFIG.trajectoryAmplitudeX;
+      const y = ladybug.baseY +
+        Math.sin(phase + Math.PI / 2) * PHASE_FOUR_CONFIG.trajectoryAmplitudeY;
+      ladybug.graphic.setPosition(Phaser.Math.Clamp(x, minX, maxX), y);
+    }
+  }
+
+  private checkLadybug(): void {
+    this.ladybugs = this.ladybugs.filter((ladybug) => {
+      const distance = Phaser.Math.Distance.Between(
+        this.player.x,
+        this.player.y,
+        ladybug.graphic.x,
+        ladybug.graphic.y,
+      );
+      if (distance > PLAYER_RADIUS + PHASE_FOUR_CONFIG.collisionRadius) return true;
+
+      this.tweens.add({
+        targets: ladybug.graphic,
+        scaleX: ladybug.graphic.scaleX * 1.5,
+        scaleY: ladybug.graphic.scaleY * 1.5,
+        alpha: 0,
+        duration: 180,
+        onComplete: () => ladybug.graphic.destroy(),
+      });
+      this.hasShield = true;
+      this.shieldRemaining = PHASE_FOUR_CONFIG.shieldDurationSeconds;
+      this.shieldAura.setPosition(this.player.x, this.player.y).setVisible(true);
+      return false;
+    });
+  }
+
+  private updateShield(seconds: number): void {
+    if (!this.hasShield) {
+      this.shieldAura.setVisible(false);
+      return;
+    }
+
+    this.shieldRemaining = Math.max(0, this.shieldRemaining - seconds);
+    if (this.shieldRemaining === 0) {
+      this.hasShield = false;
+      this.shieldAura.setVisible(false);
+      return;
+    }
+
+    this.shieldAura
+      .setPosition(this.player.x, this.player.y)
+      .setAlpha(0.24 + Math.sin(this.elapsedGameTime * 8) * 0.08)
+      .setVisible(true);
+  }
+
+  private updateLadybugWarning(seconds: number): void {
+    if (this.ladybugWarningRemaining <= 0) return;
+    this.ladybugWarningRemaining = Math.max(0, this.ladybugWarningRemaining - seconds);
+    const alpha = Math.min(
+      1,
+      this.ladybugWarningRemaining / PHASE_FOUR_CONFIG.warningFadeSeconds,
+    );
+    this.ladybugWarning.setAlpha(alpha);
   }
 
   private updateTimer(): void {
@@ -732,7 +1029,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private getCurrentPoints(): number {
-    return this.score * 10 + Math.floor(this.maxHeightReached / 50);
+    return this.score * 10 + Math.floor(this.maxHeightReached / 50) + this.bonusPoints;
   }
 
   private togglePause(): void {
@@ -853,6 +1150,19 @@ export class GameScene extends Phaser.Scene {
       fly.graphic.destroy();
       return false;
     });
+
+    this.butterflies = this.butterflies.filter((butterfly) => {
+      if (butterfly.graphic.y < this.waterY) return true;
+      butterfly.graphic.destroy();
+      return false;
+    });
+
+    this.ladybugs = this.ladybugs.filter((ladybug) => {
+      if (ladybug.graphic.y < this.waterY) return true;
+      this.tweens.killTweensOf(ladybug.graphic);
+      ladybug.graphic.destroy();
+      return false;
+    });
   }
 
   private ensureSpikesAhead(): void {
@@ -938,12 +1248,29 @@ export class GameScene extends Phaser.Scene {
   }
 
   private checkSpikeCollision(): void {
-    const hit = this.spikes.some(
+    const collidedSpikes = this.spikes.filter(
       (spike) =>
         Phaser.Math.Distance.Between(this.player.x, this.player.y, spike.x, spike.y) <=
         PHASE_TWO_CONFIG.spikeHitRadius,
     );
-    if (hit) this.endGame(PHASE_TWO_CONFIG.collisionMessage);
+    if (collidedSpikes.length === 0) return;
+
+    if (this.hasShield) {
+      const collidedSet = new Set(collidedSpikes);
+      this.spikes = this.spikes.filter((spike) => {
+        if (!collidedSet.has(spike)) return true;
+        this.tweens.killTweensOf([spike.graphic, spike.highlight]);
+        spike.graphic.destroy();
+        spike.highlight.destroy();
+        return false;
+      });
+      this.hasShield = false;
+      this.shieldRemaining = 0;
+      this.shieldAura.setVisible(false);
+      return;
+    }
+
+    this.endGame(PHASE_TWO_CONFIG.collisionMessage);
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
@@ -1275,6 +1602,9 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.shake(200, 0.01);
     this.paused = false;
     this.isReeling = false;
+    this.hasShield = false;
+    this.shieldRemaining = 0;
+    this.shieldAura.setVisible(false);
     this.finalScore = this.getCurrentPoints();
     if (this.anchor) {
       this.anchor.marker.setFillStyle(0xa5f3fc);

@@ -16,3 +16,35 @@ export const PHASE_TWO_CONFIG = {
   spikeStrokeColor: 0xfca5a5,
   collisionMessage: 'Паук напоролся на шипы!',
 } as const;
+
+export const PHASE_THREE_CONFIG = {
+  fliesToStart: 5,
+  butterflySpawnInterval: 1800,
+  butterflySpawnAheadScreens: 1.5,
+  firstButterflyLeadScreens: 0.6,
+  trajectoryAmplitudeX: 90,
+  trajectoryAmplitudeY: 38,
+  trajectoryPeriodSeconds: 4.8,
+  scoreValue: 45,
+  visualRadius: 22,
+  collisionRadius: 40,
+  warningHoldSeconds: 2.5,
+  warningFadeSeconds: 1.5,
+  warningText: 'ВНИМАНИЕ: ПОЯВИЛАСЬ БАБОЧКА!',
+} as const;
+
+export const PHASE_FOUR_CONFIG = {
+  fliesToStart: 7,
+  ladybugSpawnInterval: 2800,
+  ladybugSpawnAheadScreens: 1.5,
+  firstLadybugLeadScreens: 0.7,
+  trajectoryAmplitudeX: 48,
+  trajectoryAmplitudeY: 20,
+  trajectoryPeriodSeconds: 7,
+  shieldDurationSeconds: 3.5,
+  visualRadius: 18,
+  collisionRadius: 24,
+  warningHoldSeconds: 2.5,
+  warningFadeSeconds: 1.5,
+  warningText: 'БОЖЬЯ КОРОВКА ДАЁТ ЩИТ ОТ ШИПОВ!',
+} as const;
