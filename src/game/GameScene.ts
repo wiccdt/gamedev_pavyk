@@ -21,15 +21,8 @@ const PLATFORM_JUMP_SPEED = 390;
 const PLATFORM_MOVE_SPEED = 220;
 const WORLD_HEIGHT_MULTIPLIER = 4;
 const WORLD_CHUNK_HEIGHT = 1.2;
-const LEADERBOARD_KEY = 'spider-game-leaderboard';
-const LEADERBOARD_LIMIT = 10;
-const LEADERBOARD_DISPLAY_LIMIT = 5;
-
-type LeaderboardEntry = {
-  name: string;
-  score: number;
-  date: string;
-};
+const PERSONAL_RECORD_KEY = 'spider-game-record';
+const LEGACY_LEADERBOARD_KEY = 'spider-game-leaderboard';
 
 type AnchorPoint = {
   x: number;
@@ -87,12 +80,8 @@ export class GameScene extends Phaser.Scene {
   private pauseOverlay!: Phaser.GameObjects.Container;
   private gameOverOverlay!: Phaser.GameObjects.Container;
   private menuOverlay!: Phaser.GameObjects.Container;
-  private recordsOverlay!: Phaser.GameObjects.Container;
   private gameOverText!: Phaser.GameObjects.Text;
-  private gameOverLeaderboardText!: Phaser.GameObjects.Text;
-  private recordNameText!: Phaser.GameObjects.Text;
-  private recordNamePanel!: Phaser.GameObjects.Container;
-  private menuLeaderboardText!: Phaser.GameObjects.Text;
+  private gameOverRecordText!: Phaser.GameObjects.Text;
   private phaseWarning!: Phaser.GameObjects.Text;
   private ladybugWarning!: Phaser.GameObjects.Text;
   private maxHeightReached = 0;
@@ -135,12 +124,9 @@ export class GameScene extends Phaser.Scene {
   private hasShield = false;
   private shieldRemaining = 0;
   private gameStarted = false;
-  private menuShowingRecords = false;
-  private leaderboardUnavailable = false;
+  private recordUnavailable = false;
   private gameOver = false;
   private paused = false;
-  private recordName = '';
-  private nameEntryVisible = false;
 
   constructor() {
     super('GameScene');
@@ -190,13 +176,10 @@ export class GameScene extends Phaser.Scene {
     this.hasShield = false;
     this.shieldRemaining = 0;
     this.gameStarted = false;
-    this.menuShowingRecords = false;
-    this.leaderboardUnavailable = false;
+    this.recordUnavailable = false;
     this.waterY = worldHeight;
     this.gameOver = false;
     this.paused = false;
-    this.recordName = '';
-    this.nameEntryVisible = false;
     this.parallaxObjects = [];
     this.cameras.main.setBackgroundColor('#080b20');
 
@@ -297,8 +280,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.input.keyboard) {
       throw new Error('Keyboard input is unavailable.');
     }
-    this.input.keyboard.on('keydown-R', this.handleRestartKey, this);
-    this.input.keyboard.on('keydown', this.handleNameInput, this);
+    this.input.keyboard.on('keydown-R', this.restart, this);
     this.input.keyboard.on('keydown-SPACE', this.jumpFromPlatform, this);
     this.pauseKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
     this.escapeKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
@@ -813,20 +795,6 @@ export class GameScene extends Phaser.Scene {
         color: '#f1f5f9',
       })
       .setOrigin(0.5);
-    const openRecordsButton = this.add.rectangle(
-      width / 2,
-      height * 0.84,
-      260,
-      52,
-      0x1e293b,
-    ).setStrokeStyle(1, 0x94a3b8, 0.5);
-    const openRecordsLabel = this.add
-      .text(width / 2, height * 0.84, 'Рекорды', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '21px',
-        color: '#f1f5f9',
-      })
-      .setOrigin(0.5);
     this.menuOverlay = this.add
       .container(0, 0, [
         menuBackground,
@@ -834,56 +802,9 @@ export class GameScene extends Phaser.Scene {
         menuInstructions,
         startButton,
         startLabel,
-        openRecordsButton,
-        openRecordsLabel,
       ])
       .setScrollFactor(0)
       .setDepth(200)
-      .setVisible(false);
-
-    const recordsBackground = this.add.rectangle(
-      width / 2,
-      height / 2,
-      width,
-      height,
-      0x020617,
-      0.96,
-    );
-    const recordsTitle = this.add
-      .text(width / 2, 100, 'РЕКОРДЫ', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '36px',
-        color: '#f1f5f9',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    this.menuLeaderboardText = this.add
-      .text(width / 2, 170, '', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '20px',
-        color: '#f1f5f9',
-        align: 'center',
-        lineSpacing: 10,
-      })
-      .setOrigin(0.5, 0);
-    const backButton = this.add.rectangle(
-      width / 2,
-      height * 0.86,
-      240,
-      54,
-      0x334155,
-    );
-    const backLabel = this.add
-      .text(width / 2, height * 0.86, 'Назад', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '21px',
-        color: '#f1f5f9',
-      })
-      .setOrigin(0.5);
-    this.recordsOverlay = this.add
-      .container(0, 0, [recordsBackground, recordsTitle, this.menuLeaderboardText, backButton, backLabel])
-      .setScrollFactor(0)
-      .setDepth(201)
       .setVisible(false);
 
     const gameOverBackground = this.add.rectangle(
@@ -895,84 +816,27 @@ export class GameScene extends Phaser.Scene {
       0.82,
     );
     this.gameOverText = this.add
-      .text(width / 2, 64, '', {
+      .text(width / 2, 118, '', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '24px',
         color: '#f1f5f9',
         align: 'center',
+        lineSpacing: 8,
       })
       .setOrigin(0.5);
 
-    const namePanelBackground = this.add
-      .rectangle(width / 2, 188, 520, 154, 0x111827, 0.96)
+    const recordPanel = this.add
+      .rectangle(width / 2, 230, 460, 92, 0x111827, 0.96)
       .setStrokeStyle(2, 0x67e8f9, 0.6);
-    const namePanelTitle = this.add
-      .text(width / 2, 132, 'ЗАПИШИ РЕЗУЛЬТАТ', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '20px',
-        color: '#a5f3fc',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    const nameFieldBackground = this.add
-      .rectangle(width / 2, 176, 380, 42, 0x020617, 1)
-      .setStrokeStyle(1, 0x64748b, 0.9);
-    this.recordNameText = this.add
-      .text(width / 2, 176, 'Введи имя с клавиатуры…', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '18px',
-        color: '#94a3b8',
-      })
-      .setOrigin(0.5);
-    const saveNameButton = this.add
-      .rectangle(width / 2 - 88, 232, 150, 42, 0x0e7490)
-      .setStrokeStyle(1, 0x67e8f9, 0.8);
-    const saveNameLabel = this.add
-      .text(width / 2 - 88, 232, 'Сохранить', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '17px',
-        color: '#f1f5f9',
-      })
-      .setOrigin(0.5);
-    const skipNameButton = this.add
-      .rectangle(width / 2 + 88, 232, 150, 42, 0x334155)
-      .setStrokeStyle(1, 0x94a3b8, 0.55);
-    const skipNameLabel = this.add
-      .text(width / 2 + 88, 232, 'Пропустить', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '17px',
-        color: '#f1f5f9',
-      })
-      .setOrigin(0.5);
-    this.recordNamePanel = this.add
-      .container(0, 0, [
-        namePanelBackground,
-        namePanelTitle,
-        nameFieldBackground,
-        this.recordNameText,
-        saveNameButton,
-        saveNameLabel,
-        skipNameButton,
-        skipNameLabel,
-      ])
-      .setVisible(false);
-    const leaderboardTitle = this.add
-      .text(width / 2, 294, 'ТОП-5 РЕКОРДОВ', {
+    this.gameOverRecordText = this.add
+      .text(width / 2, 230, '', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '21px',
-        color: '#facc15',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    this.gameOverLeaderboardText = this.add
-      .text(width / 2, 330, '', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '18px',
         color: '#f1f5f9',
         align: 'center',
-        lineSpacing: 6,
+        lineSpacing: 8,
       })
-      .setOrigin(0.5, 0);
+      .setOrigin(0.5);
     const restartButton = this.add
       .rectangle(width / 2, height - 52, 250, 58, 0x0e7490)
       .setStrokeStyle(2, 0x67e8f9, 0.75);
@@ -987,9 +851,8 @@ export class GameScene extends Phaser.Scene {
       .container(0, 0, [
         gameOverBackground,
         this.gameOverText,
-        this.recordNamePanel,
-        leaderboardTitle,
-        this.gameOverLeaderboardText,
+        recordPanel,
+        this.gameOverRecordText,
         restartButton,
         restartLabel,
       ])
@@ -1000,137 +863,53 @@ export class GameScene extends Phaser.Scene {
 
   private showMenu(): void {
     this.gameStarted = false;
-    this.menuShowingRecords = false;
     this.menuOverlay.setVisible(true);
-    this.recordsOverlay.setVisible(false);
-    this.menuLeaderboardText.setText(this.formatLeaderboard(this.loadLeaderboard()));
   }
 
   private startGame(): void {
     this.gameStarted = true;
     this.menuOverlay.setVisible(false);
-    this.recordsOverlay.setVisible(false);
   }
 
-  private showMenuRecords(): void {
-    this.menuShowingRecords = true;
-    this.menuLeaderboardText.setText(this.formatLeaderboard(this.loadLeaderboard()));
-    this.menuOverlay.setVisible(false);
-    this.recordsOverlay.setVisible(true);
-  }
-
-  private formatLeaderboard(entries: LeaderboardEntry[]): string {
-    if (this.leaderboardUnavailable) return 'Таблица рекордов недоступна в этом браузере.';
-    if (entries.length === 0) return 'Рекордов пока нет. Сыграй первую партию!';
-
-    return entries
-      .slice(0, LEADERBOARD_DISPLAY_LIMIT)
-      .map((entry, index) => `${index + 1}. ${entry.name} — ${entry.score}`)
-      .join('\n');
-  }
-
-  private loadLeaderboard(): LeaderboardEntry[] {
-    this.leaderboardUnavailable = false;
+  private loadPersonalRecord(): number | null {
+    this.recordUnavailable = false;
     try {
-      const saved = window.localStorage.getItem(LEADERBOARD_KEY);
-      if (!saved) return [];
-
-      const parsed: unknown = JSON.parse(saved);
-      if (!Array.isArray(parsed)) return [];
-
-      return parsed
-        .filter((item): item is LeaderboardEntry => {
-          if (typeof item !== 'object' || item === null) return false;
-          const entry = item as Record<string, unknown>;
-          return (
-            typeof entry.name === 'string' &&
-            typeof entry.score === 'number' &&
-            Number.isFinite(entry.score) &&
-            typeof entry.date === 'string'
-          );
-        })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, LEADERBOARD_LIMIT);
-    } catch (error) {
-      this.leaderboardUnavailable = true;
-      console.warn('Не удалось прочитать локальную таблицу рекордов.', error);
-      return [];
-    }
-  }
-
-  private saveLeaderboardEntry(name: string, score: number): void {
-    const entries = this.loadLeaderboard();
-    if (this.leaderboardUnavailable) return;
-
-    entries.push({ name, score, date: new Date().toISOString() });
-    entries.sort((a, b) => b.score - a.score);
-
-    try {
-      window.localStorage.setItem(
-        LEADERBOARD_KEY,
-        JSON.stringify(entries.slice(0, LEADERBOARD_LIMIT)),
-      );
-    } catch (error) {
-      this.leaderboardUnavailable = true;
-      console.warn('Не удалось сохранить результат в локальную таблицу рекордов.', error);
-    }
-  }
-
-  private updateRecordNameText(): void {
-    if (this.recordName.length === 0) {
-      this.recordNameText
-        .setText('Введи имя с клавиатуры…')
-        .setColor('#94a3b8');
-      return;
-    }
-
-    this.recordNameText.setText(this.recordName).setColor('#f1f5f9');
-  }
-
-  private handleNameInput(event: KeyboardEvent): void {
-    if (!this.nameEntryVisible) return;
-
-    if (event.key === 'Enter') {
-      this.finishNameEntry(true);
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'Escape') {
-      this.finishNameEntry(false);
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'Backspace') {
-      this.recordName = this.recordName.slice(0, -1);
-      this.updateRecordNameText();
-      event.preventDefault();
-      return;
-    }
-    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      if (this.recordName.length < 20) {
-        this.recordName += event.key;
-        this.updateRecordNameText();
+      const savedRecord = window.localStorage.getItem(PERSONAL_RECORD_KEY);
+      if (savedRecord !== null) {
+        const parsed: unknown = JSON.parse(savedRecord);
+        if (typeof parsed === 'number' && Number.isFinite(parsed)) return parsed;
+        throw new Error('Личный рекорд имеет неверный формат.');
       }
-      event.preventDefault();
+
+      const legacySaved = window.localStorage.getItem(LEGACY_LEADERBOARD_KEY);
+      if (!legacySaved) return null;
+      const legacyEntries: unknown = JSON.parse(legacySaved);
+      if (!Array.isArray(legacyEntries)) return null;
+
+      const legacyScores = legacyEntries.flatMap((entry: unknown) => {
+        if (typeof entry !== 'object' || entry === null) return [];
+        const entryScore = (entry as Record<string, unknown>).score;
+        return typeof entryScore === 'number' && Number.isFinite(entryScore)
+          ? [entryScore]
+          : [];
+      });
+      return legacyScores.length > 0 ? Math.max(...legacyScores) : null;
+    } catch (error) {
+      this.recordUnavailable = true;
+      console.warn('Не удалось прочитать личный рекорд.', error);
+      return null;
     }
   }
 
-  private finishNameEntry(save: boolean): void {
-    if (!this.nameEntryVisible) return;
-    this.nameEntryVisible = false;
-    this.recordNamePanel.setVisible(false);
-
-    if (save) {
-      this.saveLeaderboardEntry(this.recordName.trim() || 'Паук', this.finalScore);
+  private savePersonalRecord(score: number): boolean {
+    try {
+      window.localStorage.setItem(PERSONAL_RECORD_KEY, JSON.stringify(score));
+      return true;
+    } catch (error) {
+      this.recordUnavailable = true;
+      console.warn('Не удалось сохранить личный рекорд.', error);
+      return false;
     }
-    this.gameOverLeaderboardText.setText(
-      this.formatLeaderboard(this.loadLeaderboard()),
-    );
-  }
-
-  private handleRestartKey(): void {
-    if (this.nameEntryVisible) return;
-    this.restart();
   }
 
   private getCurrentPoints(): number {
@@ -1380,23 +1159,6 @@ export class GameScene extends Phaser.Scene {
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
     if (this.gameOver) {
-      if (this.nameEntryVisible) {
-        const centerX = this.scale.width / 2;
-        const buttonY = 232;
-        if (
-          Math.abs(pointer.y - buttonY) <= 21 &&
-          Math.abs(pointer.x - (centerX - 88)) <= 75
-        ) {
-          this.finishNameEntry(true);
-        } else if (
-          Math.abs(pointer.y - buttonY) <= 21 &&
-          Math.abs(pointer.x - (centerX + 88)) <= 75
-        ) {
-          this.finishNameEntry(false);
-        }
-        return;
-      }
-
       const buttonCenterY = this.scale.height - 52;
       const clickedRestart =
         Math.abs(pointer.x - this.scale.width / 2) <= 125 &&
@@ -1405,32 +1167,13 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (!this.gameStarted) {
-      if (this.menuShowingRecords) {
-        const backCenterY = this.scale.height * 0.86;
-        if (
-          Math.abs(pointer.x - this.scale.width / 2) <= 120 &&
-          Math.abs(pointer.y - backCenterY) <= 27
-        ) {
-          this.menuShowingRecords = false;
-          this.recordsOverlay.setVisible(false);
-          this.menuOverlay.setVisible(true);
-        }
-        return;
-      }
-
       const centerX = this.scale.width / 2;
       const startCenterY = this.scale.height * 0.72;
-      const recordsCenterY = this.scale.height * 0.84;
       if (
         Math.abs(pointer.x - centerX) <= 130 &&
         Math.abs(pointer.y - startCenterY) <= 29
       ) {
         this.startGame();
-      } else if (
-        Math.abs(pointer.x - centerX) <= 130 &&
-        Math.abs(pointer.y - recordsCenterY) <= 26
-      ) {
-        this.showMenuRecords();
       }
       return;
     }
@@ -1737,13 +1480,35 @@ export class GameScene extends Phaser.Scene {
     this.gameOverText.setText(
       `${message}\nСъедено мух: ${this.score}    Очки: ${this.finalScore}`,
     );
-    this.recordName = '';
-    this.nameEntryVisible = true;
-    this.updateRecordNameText();
-    this.recordNamePanel.setVisible(true);
-    this.gameOverLeaderboardText.setText(
-      this.formatLeaderboard(this.loadLeaderboard()),
-    );
+    const previousRecord = this.loadPersonalRecord();
+    const isNewRecord =
+      !this.recordUnavailable &&
+      this.finalScore > (previousRecord ?? 0);
+
+    if (isNewRecord && !this.savePersonalRecord(this.finalScore)) {
+      this.gameOverRecordText
+        .setText('Не удалось сохранить рекорд')
+        .setColor('#fca5a5');
+    } else if (isNewRecord) {
+      this.gameOverRecordText
+        .setText(
+          `НОВЫЙ РЕКОРД! Поздравляем!\n` +
+            `Было: ${previousRecord ?? 'нет'} → Стало: ${this.finalScore}`,
+        )
+        .setColor('#fde68a');
+    } else if (this.recordUnavailable) {
+      this.gameOverRecordText
+        .setText('Личный рекорд недоступен')
+        .setColor('#fca5a5');
+    } else {
+      this.gameOverRecordText
+        .setText(
+          previousRecord === null
+            ? 'Рекорд пока не установлен'
+            : `Предыдущий рекорд: ${previousRecord} очков`,
+        )
+        .setColor('#f1f5f9');
+    }
     this.gameOverOverlay.setAlpha(0).setVisible(true);
     this.tweens.add({ targets: this.gameOverOverlay, alpha: 1, duration: 280 });
   }
