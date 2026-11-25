@@ -80,6 +80,9 @@ export class GameScene extends Phaser.Scene {
   private pauseOverlay!: Phaser.GameObjects.Container;
   private gameOverOverlay!: Phaser.GameObjects.Container;
   private menuOverlay!: Phaser.GameObjects.Container;
+  private mobileControls!: Phaser.GameObjects.Container;
+  private mobileActionLabel!: Phaser.GameObjects.Text;
+  private mobileHintText!: Phaser.GameObjects.Text;
   private gameOverText!: Phaser.GameObjects.Text;
   private gameOverRecordText!: Phaser.GameObjects.Text;
   private phaseWarning!: Phaser.GameObjects.Text;
@@ -127,6 +130,19 @@ export class GameScene extends Phaser.Scene {
   private recordUnavailable = false;
   private gameOver = false;
   private paused = false;
+  private isMobile = false;
+  private tiltDirection = 0;
+  private tiltNeutral = 0;
+  private hasTiltBaseline = false;
+  private reelingPointerId: number | null = null;
+  private readonly handleDeviceOrientation = (event: DeviceOrientationEvent): void => {
+    if (event.gamma === null) return;
+    if (!this.hasTiltBaseline) {
+      this.tiltNeutral = event.gamma;
+      this.hasTiltBaseline = true;
+    }
+    this.tiltDirection = Phaser.Math.Clamp((event.gamma - this.tiltNeutral) / 22, -1, 1);
+  };
 
   constructor() {
     super('GameScene');
@@ -140,6 +156,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.isMobile = window.matchMedia('(pointer: coarse)').matches;
     const { width, height } = this.scale;
     const worldHeight = height * WORLD_HEIGHT_MULTIPLIER;
     const startingY = height * 3.5;
@@ -180,6 +197,9 @@ export class GameScene extends Phaser.Scene {
     this.waterY = worldHeight;
     this.gameOver = false;
     this.paused = false;
+    this.tiltDirection = 0;
+    this.hasTiltBaseline = false;
+    this.reelingPointerId = null;
     this.parallaxObjects = [];
     this.cameras.main.setBackgroundColor('#080b20');
 
@@ -192,30 +212,37 @@ export class GameScene extends Phaser.Scene {
     this.add
       .text(width / 2, 18, 'ПАУК', {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: '28px',
+        fontSize: this.isMobile ? '22px' : '28px',
         color: '#f1f5f9',
         fontStyle: 'bold',
       })
       .setOrigin(0.5, 0)
       .setScrollFactor(0);
 
-    this.scoreText = this.add.text(24, 24, 'Очки: 0 | Мухи: 0', {
+    const hudFontSize = this.isMobile ? '13px' : '21px';
+    const hudLeft = this.isMobile ? 12 : 24;
+    const hudTop = this.isMobile ? 17 : 24;
+    this.scoreText = this.add.text(hudLeft, hudTop, 'Очки: 0 | Мухи: 0', {
       fontFamily: 'system-ui, sans-serif',
-      fontSize: '21px',
+      fontSize: hudFontSize,
       color: '#f1f5f9',
     }).setScrollFactor(0).setDepth(12);
-    this.timerText = this.add.text(width - 24, 24, 'Время: 00:00', {
+    this.timerText = this.add.text(width - hudLeft, hudTop, 'Время: 00:00', {
       fontFamily: 'system-ui, sans-serif',
-      fontSize: '21px',
+      fontSize: hudFontSize,
       color: '#f1f5f9',
     }).setOrigin(1, 0).setScrollFactor(0).setDepth(12);
     const hudPanels = this.add.graphics().setScrollFactor(0).setDepth(11);
     hudPanels.fillStyle(0x0f172a, 0.72);
     hudPanels.lineStyle(1, 0x94a3b8, 0.3);
-    hudPanels.fillRoundedRect(14, 16, 250, 40, 10);
-    hudPanels.strokeRoundedRect(14, 16, 250, 40, 10);
-    hudPanels.fillRoundedRect(width - 198, 16, 184, 40, 10);
-    hudPanels.strokeRoundedRect(width - 198, 16, 184, 40, 10);
+    const scorePanelWidth = this.isMobile ? Math.min(178, width * 0.55) : 250;
+    const timerPanelWidth = this.isMobile ? Math.min(126, width * 0.38) : 184;
+    const panelHeight = this.isMobile ? 32 : 40;
+    const panelY = this.isMobile ? 8 : 16;
+    hudPanels.fillRoundedRect(hudLeft - 4, panelY, scorePanelWidth, panelHeight, 10);
+    hudPanels.strokeRoundedRect(hudLeft - 4, panelY, scorePanelWidth, panelHeight, 10);
+    hudPanels.fillRoundedRect(width - hudLeft - timerPanelWidth + 4, panelY, timerPanelWidth, panelHeight, 10);
+    hudPanels.strokeRoundedRect(width - hudLeft - timerPanelWidth + 4, panelY, timerPanelWidth, panelHeight, 10);
     this.phaseWarning = this.add
       .text(width / 2, height * 0.2, PHASE_TWO_CONFIG.warningText, {
         fontFamily: 'system-ui, sans-serif',
@@ -240,7 +267,7 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setScrollFactor(0)
       .setAlpha(0);
-    this.createControlHint(height);
+    this.createControlHint(width, height);
 
     this.createPlatforms(width, height, startingY);
     this.createAnchorPoints(width, height, startingY);
@@ -273,9 +300,13 @@ export class GameScene extends Phaser.Scene {
     this.attachTo(startingAnchor);
 
     this.input.on('pointerdown', this.handlePointerDown, this);
+    this.input.on('pointerup', this.handlePointerUp, this);
+    this.input.on('pointerupoutside', this.handlePointerUp, this);
     this.cameras.main.scrollY = startingY - height * 0.68;
     this.createOverlays(width, height);
+    if (this.isMobile) this.createMobileControls(width, height);
     this.showMenu();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleSceneShutdown, this);
 
     if (!this.input.keyboard) {
       throw new Error('Keyboard input is unavailable.');
@@ -394,8 +425,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createAnchorPoint(x: number, y: number): AnchorPoint {
-    const halo = this.add.circle(x, y, 19, 0x67e8f9, 0.16).setDepth(4);
-    const marker = this.add.circle(x, y, 8, 0xa5f3fc)
+    const halo = this.add.circle(x, y, this.isMobile ? 27 : 19, 0x67e8f9, 0.16).setDepth(4);
+    const marker = this.add.circle(x, y, this.isMobile ? 12 : 8, 0xa5f3fc)
       .setStrokeStyle(2, 0xe0f2fe, 0.9)
       .setDepth(5);
     return { x, y, marker, halo };
@@ -449,7 +480,34 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private createControlHint(height: number): void {
+  private createControlHint(width: number, height: number): void {
+    if (this.isMobile) {
+      const hintWidth = Math.max(150, width - 160);
+      const background = this.add
+        .rectangle(width / 2, height - 144, hintWidth, 68, 0x020617, 0.78)
+        .setStrokeStyle(1, 0x94a3b8, 0.4);
+      this.mobileHintText = this.add
+        .text(
+          width / 2,
+          height - 144,
+          'Удерживай точку — подтяжка\nНаклоняй телефон — раскачка\nСправа: стоп/прыжок • слева: пауза',
+          {
+            fontFamily: 'system-ui, sans-serif',
+            fontSize: width < 360 ? '10px' : '12px',
+            color: '#f1f5f9',
+            align: 'center',
+            lineSpacing: 4,
+            wordWrap: { width: hintWidth - 12 },
+          },
+        )
+        .setOrigin(0.5);
+      this.add
+        .container(0, 0, [background, this.mobileHintText])
+        .setScrollFactor(0)
+        .setDepth(20);
+      return;
+    }
+
     const background = this.add
       .rectangle(16, height - 86, 440, 70, 0x020617, 0.7)
       .setOrigin(0);
@@ -471,6 +529,74 @@ export class GameScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(10)
       .setAlpha(0.9);
+  }
+
+  private createMobileControls(width: number, height: number): void {
+    const pauseX = 52;
+    const actionX = width - 52;
+    const controlsY = height - 58;
+    const pauseButton = this.add.circle(pauseX, controlsY, 38, 0x0f172a, 0.94)
+      .setStrokeStyle(2, 0x94a3b8, 0.75);
+    const pauseLabel = this.add
+      .text(pauseX, controlsY, 'Ⅱ', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '28px',
+        color: '#f1f5f9',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    const actionButton = this.add.circle(actionX, controlsY, 42, 0x0e7490, 0.96)
+      .setStrokeStyle(2, 0x67e8f9, 0.9);
+    this.mobileActionLabel = this.add
+      .text(actionX, controlsY, 'СТОП /\nПРЫЖОК', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: width < 360 ? '10px' : '12px',
+        color: '#f1f5f9',
+        align: 'center',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    this.mobileControls = this.add
+      .container(0, 0, [pauseButton, pauseLabel, actionButton, this.mobileActionLabel])
+      .setScrollFactor(0)
+      .setDepth(30)
+      .setVisible(false);
+  }
+
+  private enableTiltControl(): void {
+    if (!this.isMobile || !('DeviceOrientationEvent' in window)) {
+      this.mobileHintText?.setText('Наклон недоступен в этом браузере\nУдерживай точку — подтяжка\nСправа: стоп/прыжок • слева: пауза');
+      return;
+    }
+
+    const orientationApi = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
+      requestPermission?: () => Promise<string>;
+    };
+    if (typeof orientationApi.requestPermission !== 'function') {
+      window.addEventListener('deviceorientation', this.handleDeviceOrientation);
+      this.mobileHintText.setText('Наклоняй телефон — раскачка\nУдерживай точку — подтяжка\nСправа: стоп/прыжок • слева: пауза');
+      return;
+    }
+
+    void orientationApi.requestPermission()
+      .then((permission) => {
+        if (permission === 'granted') {
+          window.addEventListener('deviceorientation', this.handleDeviceOrientation);
+          this.mobileHintText.setText('Наклоняй телефон — раскачка\nУдерживай точку — подтяжка\nСправа: стоп/прыжок • слева: пауза');
+        } else {
+          this.mobileHintText.setText('Разреши датчик движения в браузере\nУдерживай точку — подтяжка\nКнопки по краям: пауза / прыжок');
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn('Не удалось включить управление наклоном.', error);
+        this.mobileHintText.setText('Не удалось включить наклон\nПроверь разрешения браузера\nУдерживай точку — подтяжка');
+      });
+  }
+
+  private handleSceneShutdown(): void {
+    window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
+    this.input.off('pointerup', this.handlePointerUp, this);
+    this.input.off('pointerupoutside', this.handlePointerUp, this);
   }
 
   private addFly(x: number, y: number): void {
@@ -733,13 +859,19 @@ export class GameScene extends Phaser.Scene {
       0.78,
     );
     const pauseText = this.add
-      .text(width / 2, height / 2, 'ПАУЗА\nНажми Esc или P, чтобы продолжить', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '30px',
-        color: '#f1f5f9',
-        align: 'center',
-        lineSpacing: 12,
-      })
+      .text(
+        width / 2,
+        height / 2,
+        this.isMobile ? 'ПАУЗА\nКоснись экрана, чтобы продолжить' : 'ПАУЗА\nНажми Esc или P, чтобы продолжить',
+        {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: this.isMobile ? '20px' : '30px',
+          color: '#f1f5f9',
+          align: 'center',
+          lineSpacing: 12,
+          wordWrap: { width: width - 32 },
+        },
+      )
       .setOrigin(0.5);
     this.pauseOverlay = this.add
       .container(0, 0, [pauseBackground, pauseText])
@@ -758,7 +890,7 @@ export class GameScene extends Phaser.Scene {
     const menuTitle = this.add
       .text(width / 2, 82, 'ПАУК', {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: '48px',
+        fontSize: this.isMobile ? '40px' : '48px',
         color: '#f1f5f9',
         fontStyle: 'bold',
       })
@@ -767,17 +899,24 @@ export class GameScene extends Phaser.Scene {
       .text(
         width / 2,
         150,
-        'Клик по голубой точке — зацепиться и подтянуться\n' +
-          'ПРОБЕЛ — остановить подтягивание / прыгнуть с платформы\n' +
-          'A/D или стрелки — раскачка на нити / ходьба по платформе\n' +
-          'Клик в пустоту — отпустить нить\n' +
-          'Esc/P — пауза',
+        this.isMobile
+          ? 'Коснись голубой точки и удерживай — подтягивание\n' +
+            'Отпусти палец — перестать подтягиваться\n' +
+            'Наклоняй телефон — раскачка на нити / ходьба\n' +
+            'Кнопка справа — стоп или прыжок\n' +
+            'Кнопка слева — пауза'
+          : 'Клик по голубой точке — зацепиться и подтянуться\n' +
+            'ПРОБЕЛ — остановить подтягивание / прыгнуть с платформы\n' +
+            'A/D или стрелки — раскачка на нити / ходьба по платформе\n' +
+            'Клик в пустоту — отпустить нить\n' +
+            'Esc/P — пауза',
         {
           fontFamily: 'system-ui, sans-serif',
-          fontSize: '18px',
+          fontSize: this.isMobile ? '14px' : '18px',
           color: '#f1f5f9',
           align: 'center',
           lineSpacing: 8,
+          wordWrap: { width: width - 32 },
         },
       )
       .setOrigin(0.5, 0);
@@ -826,15 +965,16 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     const recordPanel = this.add
-      .rectangle(width / 2, 230, 460, 92, 0x111827, 0.96)
+      .rectangle(width / 2, this.isMobile ? height * 0.48 : 230, this.isMobile ? width - 28 : 460, 92, 0x111827, 0.96)
       .setStrokeStyle(2, 0x67e8f9, 0.6);
     this.gameOverRecordText = this.add
-      .text(width / 2, 230, '', {
+      .text(width / 2, this.isMobile ? height * 0.48 : 230, '', {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: '21px',
+        fontSize: this.isMobile ? '16px' : '21px',
         color: '#f1f5f9',
         align: 'center',
         lineSpacing: 8,
+        wordWrap: { width: width - 44 },
       })
       .setOrigin(0.5);
     const restartButton = this.add
@@ -863,12 +1003,15 @@ export class GameScene extends Phaser.Scene {
 
   private showMenu(): void {
     this.gameStarted = false;
+    this.mobileControls?.setVisible(false);
     this.menuOverlay.setVisible(true);
   }
 
   private startGame(): void {
     this.gameStarted = true;
     this.menuOverlay.setVisible(false);
+    this.mobileControls?.setVisible(this.isMobile);
+    this.enableTiltControl();
   }
 
   private loadPersonalRecord(): number | null {
@@ -926,7 +1069,11 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.pauseOverlay.setVisible(false).setAlpha(1);
     }
-    if (this.paused) this.isReeling = false;
+    if (this.paused) {
+      this.isReeling = false;
+      this.reelingPointerId = null;
+    }
+    this.mobileControls?.setVisible(this.gameStarted && !this.gameOver && !this.paused);
   }
 
   private ensureWorldAhead(): void {
@@ -1177,7 +1324,28 @@ export class GameScene extends Phaser.Scene {
       }
       return;
     }
-    if (this.paused) return;
+    if (this.isMobile) {
+      const controlsY = this.scale.height - 58;
+      if (Phaser.Math.Distance.Between(pointer.x, pointer.y, 52, controlsY) <= 46) {
+        this.togglePause();
+        return;
+      }
+      if (
+        Phaser.Math.Distance.Between(
+          pointer.x,
+          pointer.y,
+          this.scale.width - 52,
+          controlsY,
+        ) <= 50
+      ) {
+        this.jumpFromPlatform();
+        return;
+      }
+    }
+    if (this.paused) {
+      this.togglePause();
+      return;
+    }
 
     const nearestAnchor = this.findAnchor(pointer.worldX, pointer.worldY);
     if (nearestAnchor) {
@@ -1193,6 +1361,9 @@ export class GameScene extends Phaser.Scene {
 
       this.attachTo(nearestAnchor);
       this.isReeling = true;
+      if (this.isMobile && pointer.wasTouch) {
+        this.reelingPointerId = pointer.id;
+      }
       return;
     }
 
@@ -1201,9 +1372,17 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private handlePointerUp(pointer: Phaser.Input.Pointer): void {
+    if (!this.isMobile || this.reelingPointerId !== pointer.id) return;
+    this.reelingPointerId = null;
+    this.isReeling = false;
+  }
+
   private findAnchor(x: number, y: number): AnchorPoint | null {
     let nearest: AnchorPoint | null = null;
-    let nearestDistance = ANCHOR_SELECT_RADIUS;
+    let nearestDistance = this.isMobile
+      ? Math.max(ANCHOR_SELECT_RADIUS, 72)
+      : ANCHOR_SELECT_RADIUS;
 
     for (const point of this.anchorPoints) {
       const distance = Phaser.Math.Distance.Between(x, y, point.x, point.y);
@@ -1266,12 +1445,21 @@ export class GameScene extends Phaser.Scene {
     if (!this.anchor && wasGrounded) {
       const movingRight = this.cursors.right.isDown || this.wasd.right.isDown;
       const movingLeft = this.cursors.left.isDown || this.wasd.left.isDown;
-      this.velocityX = Number(movingRight) * PLATFORM_MOVE_SPEED -
-        Number(movingLeft) * PLATFORM_MOVE_SPEED;
+      const direction = Phaser.Math.Clamp(
+        Number(movingRight) - Number(movingLeft) + (this.isMobile ? this.tiltDirection : 0),
+        -1,
+        1,
+      );
+      this.velocityX = direction * PLATFORM_MOVE_SPEED;
     } else if (this.anchor) {
       const steeringRight = this.cursors.right.isDown || this.wasd.right.isDown;
       const steeringLeft = this.cursors.left.isDown || this.wasd.left.isDown;
-      const direction = Number(steeringRight) - Number(steeringLeft);
+      const direction = Phaser.Math.Clamp(
+        Number(steeringRight) - Number(steeringLeft) +
+          (this.isMobile ? this.tiltDirection : 0),
+        -1,
+        1,
+      );
       this.velocityX += direction * SWING_STEERING_ACCELERATION * seconds;
     }
     const gravityMultiplier = this.anchor ? SWING_GRAVITY_MULTIPLIER : 1;
@@ -1467,6 +1655,8 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.shake(200, 0.01);
     this.paused = false;
     this.isReeling = false;
+    this.reelingPointerId = null;
+    this.mobileControls?.setVisible(false);
     this.hasShield = false;
     this.shieldRemaining = 0;
     this.shieldAura.setVisible(false);
