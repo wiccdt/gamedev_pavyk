@@ -12,6 +12,7 @@ const FLY_COLLISION_RADIUS = 18;
 const GRAVITY = 820;
 const SWING_GRAVITY_MULTIPLIER = 1.4;
 const SWING_STEERING_ACCELERATION = 260;
+const MOBILE_INITIAL_SWING_SPEED = 220;
 const WATER_RISE_SPEED = 60;
 const MAX_ATTACH_DISTANCE = 460;
 const REEL_SPEED = 150;
@@ -131,18 +132,7 @@ export class GameScene extends Phaser.Scene {
   private gameOver = false;
   private paused = false;
   private isMobile = false;
-  private tiltDirection = 0;
-  private tiltNeutral = 0;
-  private hasTiltBaseline = false;
   private reelingPointerId: number | null = null;
-  private readonly handleDeviceOrientation = (event: DeviceOrientationEvent): void => {
-    if (event.gamma === null) return;
-    if (!this.hasTiltBaseline) {
-      this.tiltNeutral = event.gamma;
-      this.hasTiltBaseline = true;
-    }
-    this.tiltDirection = Phaser.Math.Clamp((event.gamma - this.tiltNeutral) / 22, -1, 1);
-  };
 
   constructor() {
     super('GameScene');
@@ -197,8 +187,6 @@ export class GameScene extends Phaser.Scene {
     this.waterY = worldHeight;
     this.gameOver = false;
     this.paused = false;
-    this.tiltDirection = 0;
-    this.hasTiltBaseline = false;
     this.reelingPointerId = null;
     this.parallaxObjects = [];
     this.cameras.main.setBackgroundColor('#080b20');
@@ -210,7 +198,7 @@ export class GameScene extends Phaser.Scene {
     this.createNightSky(width, height, worldHeight);
 
     this.add
-      .text(width / 2, 18, 'ПАУК', {
+      .text(width / 2, this.isMobile ? 6 : 18, 'ПАУК', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: this.isMobile ? '22px' : '28px',
         color: '#f1f5f9',
@@ -219,30 +207,38 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setScrollFactor(0);
 
-    const hudFontSize = this.isMobile ? '13px' : '21px';
+    const hudFontSize = this.isMobile ? (width < 360 ? '10px' : '11px') : '21px';
     const hudLeft = this.isMobile ? 12 : 24;
-    const hudTop = this.isMobile ? 17 : 24;
-    this.scoreText = this.add.text(hudLeft, hudTop, 'Очки: 0 | Мухи: 0', {
+    const hudTop = this.isMobile ? 45 : 24;
+    const scoreX = this.isMobile ? width - hudLeft : hudLeft;
+    const timerX = this.isMobile ? hudLeft : width - hudLeft;
+    this.scoreText = this.add.text(scoreX, hudTop, 'Очки: 0 | Мухи: 0', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: hudFontSize,
       color: '#f1f5f9',
-    }).setScrollFactor(0).setDepth(12);
-    this.timerText = this.add.text(width - hudLeft, hudTop, 'Время: 00:00', {
+    }).setOrigin(this.isMobile ? 1 : 0, 0).setScrollFactor(0).setDepth(12);
+    this.timerText = this.add.text(timerX, hudTop, 'Время: 00:00', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: hudFontSize,
       color: '#f1f5f9',
-    }).setOrigin(1, 0).setScrollFactor(0).setDepth(12);
+    }).setOrigin(this.isMobile ? 0 : 1, 0).setScrollFactor(0).setDepth(12);
     const hudPanels = this.add.graphics().setScrollFactor(0).setDepth(11);
     hudPanels.fillStyle(0x0f172a, 0.72);
     hudPanels.lineStyle(1, 0x94a3b8, 0.3);
-    const scorePanelWidth = this.isMobile ? Math.min(178, width * 0.55) : 250;
-    const timerPanelWidth = this.isMobile ? Math.min(126, width * 0.38) : 184;
-    const panelHeight = this.isMobile ? 32 : 40;
-    const panelY = this.isMobile ? 8 : 16;
-    hudPanels.fillRoundedRect(hudLeft - 4, panelY, scorePanelWidth, panelHeight, 10);
-    hudPanels.strokeRoundedRect(hudLeft - 4, panelY, scorePanelWidth, panelHeight, 10);
-    hudPanels.fillRoundedRect(width - hudLeft - timerPanelWidth + 4, panelY, timerPanelWidth, panelHeight, 10);
-    hudPanels.strokeRoundedRect(width - hudLeft - timerPanelWidth + 4, panelY, timerPanelWidth, panelHeight, 10);
+    const scorePanelWidth = this.isMobile ? Math.min(148, width * 0.46) : 250;
+    const timerPanelWidth = this.isMobile ? Math.min(108, width * 0.36) : 184;
+    const panelHeight = this.isMobile ? 27 : 40;
+    const panelY = this.isMobile ? 39 : 16;
+    const scorePanelX = this.isMobile
+      ? width - hudLeft - scorePanelWidth + 4
+      : hudLeft - 4;
+    const timerPanelX = this.isMobile
+      ? hudLeft - 4
+      : width - hudLeft - timerPanelWidth + 4;
+    hudPanels.fillRoundedRect(scorePanelX, panelY, scorePanelWidth, panelHeight, 10);
+    hudPanels.strokeRoundedRect(scorePanelX, panelY, scorePanelWidth, panelHeight, 10);
+    hudPanels.fillRoundedRect(timerPanelX, panelY, timerPanelWidth, panelHeight, 10);
+    hudPanels.strokeRoundedRect(timerPanelX, panelY, timerPanelWidth, panelHeight, 10);
     this.phaseWarning = this.add
       .text(width / 2, height * 0.2, PHASE_TWO_CONFIG.warningText, {
         fontFamily: 'system-ui, sans-serif',
@@ -297,6 +293,7 @@ export class GameScene extends Phaser.Scene {
     if (!startingAnchor) {
       throw new Error('At least one spider anchor point is required.');
     }
+    if (this.isMobile) this.velocityX = MOBILE_INITIAL_SWING_SPEED;
     this.attachTo(startingAnchor);
 
     this.input.on('pointerdown', this.handlePointerDown, this);
@@ -490,7 +487,7 @@ export class GameScene extends Phaser.Scene {
         .text(
           width / 2,
           height - 144,
-          'Удерживай точку — подтяжка\nНаклоняй телефон — раскачка\nСправа: стоп/прыжок • слева: пауза',
+          'Касайся точек — цепляйся и отпускай\nУдерживай точку — подтягивание\nСправа: стоп/прыжок • слева: пауза',
           {
             fontFamily: 'system-ui, sans-serif',
             fontSize: width < 360 ? '10px' : '12px',
@@ -563,38 +560,7 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false);
   }
 
-  private enableTiltControl(): void {
-    if (!this.isMobile || !('DeviceOrientationEvent' in window)) {
-      this.mobileHintText?.setText('Наклон недоступен в этом браузере\nУдерживай точку — подтяжка\nСправа: стоп/прыжок • слева: пауза');
-      return;
-    }
-
-    const orientationApi = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
-      requestPermission?: () => Promise<string>;
-    };
-    if (typeof orientationApi.requestPermission !== 'function') {
-      window.addEventListener('deviceorientation', this.handleDeviceOrientation);
-      this.mobileHintText.setText('Наклоняй телефон — раскачка\nУдерживай точку — подтяжка\nСправа: стоп/прыжок • слева: пауза');
-      return;
-    }
-
-    void orientationApi.requestPermission()
-      .then((permission) => {
-        if (permission === 'granted') {
-          window.addEventListener('deviceorientation', this.handleDeviceOrientation);
-          this.mobileHintText.setText('Наклоняй телефон — раскачка\nУдерживай точку — подтяжка\nСправа: стоп/прыжок • слева: пауза');
-        } else {
-          this.mobileHintText.setText('Разреши датчик движения в браузере\nУдерживай точку — подтяжка\nКнопки по краям: пауза / прыжок');
-        }
-      })
-      .catch((error: unknown) => {
-        console.warn('Не удалось включить управление наклоном.', error);
-        this.mobileHintText.setText('Не удалось включить наклон\nПроверь разрешения браузера\nУдерживай точку — подтяжка');
-      });
-  }
-
   private handleSceneShutdown(): void {
-    window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
     this.input.off('pointerup', this.handlePointerUp, this);
     this.input.off('pointerupoutside', this.handlePointerUp, this);
   }
@@ -902,7 +868,7 @@ export class GameScene extends Phaser.Scene {
         this.isMobile
           ? 'Коснись голубой точки и удерживай — подтягивание\n' +
             'Отпусти палец — перестать подтягиваться\n' +
-            'Наклоняй телефон — раскачка на нити / ходьба\n' +
+            'Паук начинает раскачиваться сам — отпускай нить у мух\n' +
             'Кнопка справа — стоп или прыжок\n' +
             'Кнопка слева — пауза'
           : 'Клик по голубой точке — зацепиться и подтянуться\n' +
@@ -1011,7 +977,6 @@ export class GameScene extends Phaser.Scene {
     this.gameStarted = true;
     this.menuOverlay.setVisible(false);
     this.mobileControls?.setVisible(this.isMobile);
-    this.enableTiltControl();
   }
 
   private loadPersonalRecord(): number | null {
@@ -1445,21 +1410,12 @@ export class GameScene extends Phaser.Scene {
     if (!this.anchor && wasGrounded) {
       const movingRight = this.cursors.right.isDown || this.wasd.right.isDown;
       const movingLeft = this.cursors.left.isDown || this.wasd.left.isDown;
-      const direction = Phaser.Math.Clamp(
-        Number(movingRight) - Number(movingLeft) + (this.isMobile ? this.tiltDirection : 0),
-        -1,
-        1,
-      );
-      this.velocityX = direction * PLATFORM_MOVE_SPEED;
+      this.velocityX = Number(movingRight) * PLATFORM_MOVE_SPEED -
+        Number(movingLeft) * PLATFORM_MOVE_SPEED;
     } else if (this.anchor) {
       const steeringRight = this.cursors.right.isDown || this.wasd.right.isDown;
       const steeringLeft = this.cursors.left.isDown || this.wasd.left.isDown;
-      const direction = Phaser.Math.Clamp(
-        Number(steeringRight) - Number(steeringLeft) +
-          (this.isMobile ? this.tiltDirection : 0),
-        -1,
-        1,
-      );
+      const direction = Number(steeringRight) - Number(steeringLeft);
       this.velocityX += direction * SWING_STEERING_ACCELERATION * seconds;
     }
     const gravityMultiplier = this.anchor ? SWING_GRAVITY_MULTIPLIER : 1;
